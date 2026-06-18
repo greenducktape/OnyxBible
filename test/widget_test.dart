@@ -8,8 +8,7 @@ void main() {
 
     // First frame: the chapter is still loading (no network in tests), but the
     // app bar should already show the default book/chapter and a spinner.
-    expect(find.text('JOHN'), findsOneWidget);
-    expect(find.text('Chapter 1'), findsOneWidget);
+    expect(find.text('John 1'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
   });
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -17,29 +18,42 @@ void main() async {
   runApp(const BooxBibleApp());
 }
 
+// --- E-ink design tokens --------------------------------------------------
+//
+// E-ink panels can't render subtle greys (they dither into noisy stipple), so
+// the palette is essentially pure black on white. A single restrained grey is
+// reserved for tiny meta labels; a lighter one marks disabled controls.
+
+const Color kInk = Color(0xFF000000);
+const Color kMuted = Color(0xFF5F5F5F);
+const Color kDisabled = Color(0xFFB4B4B4);
+const Color kPaper = Color(0xFFFFFFFF);
+
+// Reading layout. The measure is capped so lines stay comfortable on large
+// (10"+) Boox screens, and the column is centred on whatever space remains.
+const double kMaxContentWidth = 640;
+const double kHPadding = 24;
+const double kGutterWidth = 34; // left margin holding the verse number
+const double kVerseSpacing = 12; // gap below each verse
+const double kChapterHeaderHeight = 144; // reserved on the first page only
+const EdgeInsets kPageVPadding = EdgeInsets.symmetric(vertical: 16);
+
 // --- Shared typography ----------------------------------------------------
 //
-// These are built once instead of on every build/paint. Calling GoogleFonts in
-// a hot path (paint, pagination, per-pointer rebuild) is expensive, so the
-// styles are hoisted here and reused everywhere. Pagination MUST measure with
-// the exact same spans the verse renders, so both go through [verseSpan].
+// Built once, not per build/paint. Pagination MUST measure with the same body
+// style the verse renders, otherwise pages overflow or leave gaps.
 
 final TextStyle kVerseStyle =
-    GoogleFonts.crimsonPro(fontSize: 21, height: 1.5, color: Colors.black);
+    GoogleFonts.crimsonPro(fontSize: 22, height: 1.55, color: kInk);
 final TextStyle kVerseNumberStyle = GoogleFonts.crimsonPro(
-  fontSize: 12,
-  height: 1.5,
-  color: Colors.black,
+  fontSize: 13,
+  height: 1.2,
+  color: kMuted,
   fontWeight: FontWeight.w700,
 );
-const double kVerseSpacing = 10.0; // vertical gap between verses (top+bottom)
-const EdgeInsets kPagePadding =
-    EdgeInsets.symmetric(horizontal: 26, vertical: 12);
 
-TextSpan verseSpan(Verse v) => TextSpan(children: [
-      TextSpan(text: '${v.number} ', style: kVerseNumberStyle),
-      TextSpan(text: v.text, style: kVerseStyle),
-    ]);
+TextStyle kTitleStyle(double size, {FontWeight weight = FontWeight.w600}) =>
+    GoogleFonts.crimsonPro(fontSize: size, fontWeight: weight, color: kInk);
 
 // --- Data Models ----------------------------------------------------------
 
@@ -184,7 +198,6 @@ class DrawingStore {
 // --- Persistence: scripture text (offline cache) --------------------------
 
 class ChapterStore {
-  // In-memory cache survives navigation; disk cache survives restarts/offline.
   static final Map<String, List<Verse>> _memory = {};
   static final Map<String, List<List<Verse>>> _pageCache = {};
 
@@ -236,18 +249,34 @@ class BooxBibleApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // A deliberately flat theme: no ink splashes, no surface tints, no
+    // elevation shadows — all of which ghost or smudge on e-ink.
+    final base = ThemeData(
+      brightness: Brightness.light,
+      scaffoldBackgroundColor: kPaper,
+      useMaterial3: true,
+      splashFactory: NoSplash.splashFactory,
+      splashColor: Colors.transparent,
+      highlightColor: Colors.transparent,
+      hoverColor: Colors.transparent,
+      colorScheme: const ColorScheme.light(
+        primary: kInk,
+        surface: kPaper,
+        surfaceTint: Colors.transparent,
+      ),
+      iconTheme: const IconThemeData(color: kInk),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: kPaper,
+        foregroundColor: kInk,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        centerTitle: true,
+      ),
+    );
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.light,
-        scaffoldBackgroundColor: Colors.white,
-        useMaterial3: true,
-        colorScheme: const ColorScheme.light(
-          primary: Colors.black,
-          surface: Colors.white,
-        ),
-        textTheme: GoogleFonts.crimsonProTextTheme(),
-      ),
+      theme: base.copyWith(textTheme: GoogleFonts.crimsonProTextTheme(base.textTheme)),
       home: const BibleReaderScreen(),
     );
   }
@@ -310,14 +339,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       _hasError = false;
     });
 
-    // 1) in-memory cache
     final cached = ChapterStore.memory(_book, _chapter);
     if (cached != null) {
       _applyVerses(cached);
       return;
     }
 
-    // 2) on-disk cache (offline support)
     final disk = await ChapterStore.loadDisk(_book, _chapter);
     if (disk != null && disk.isNotEmpty) {
       ChapterStore.putMemory(_book, _chapter, disk);
@@ -326,7 +353,6 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       return;
     }
 
-    // 3) network
     final fetched = await _fetch(_book, _chapter);
     if (fetched != null) {
       ChapterStore.putMemory(_book, _chapter, fetched);
@@ -442,11 +468,16 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   // --- Pagination ---------------------------------------------------------
+  //
+  // [textWidth] is the width available to the verse *text* (content minus the
+  // number gutter). The first page reserves space for the chapter header.
 
-  List<List<Verse>> _paginate(List<Verse> verses, Size size) {
+  List<List<Verse>> _paginate(
+      List<Verse> verses, double textWidth, double availableHeight) {
     if (verses.isEmpty) return const [];
 
-    final key = '${_book}_${_chapter}_${size.width.round()}x${size.height.round()}';
+    final key =
+        '${_book}_${_chapter}_${textWidth.round()}x${availableHeight.round()}';
     final cached = ChapterStore.pages(key);
     if (cached != null) return cached;
 
@@ -456,11 +487,15 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
 
     final painter = TextPainter(textDirection: TextDirection.ltr);
     for (final v in verses) {
-      painter.text = verseSpan(v);
-      painter.layout(maxWidth: size.width);
+      painter.text = TextSpan(text: v.text, style: kVerseStyle);
+      painter.layout(maxWidth: textWidth);
       final vh = painter.height + kVerseSpacing;
 
-      if (h + vh > size.height && current.isNotEmpty) {
+      // The first page is shorter because the chapter header sits on top.
+      final cap =
+          result.isEmpty ? availableHeight - kChapterHeaderHeight : availableHeight;
+
+      if (h + vh > cap && current.isNotEmpty) {
         result.add(current);
         current = [v];
         h = vh;
@@ -480,75 +515,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
-        elevation: 0,
-        centerTitle: true,
-        title: InkWell(
-          onTap: _openPicker,
-          borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _book.toUpperCase(),
-                  style: const TextStyle(
-                      fontSize: 11,
-                      letterSpacing: 2,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black54),
-                ),
-                Text(
-                  'Chapter $_chapter',
-                  style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.black),
-                ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Stroke width',
-            icon: _WidthGlyph(width: _penWidth, active: !_isEraser),
-            onPressed: () => setState(
-                () => _widthIndex = (_widthIndex + 1) % _widths.length),
-          ),
-          IconButton(
-            tooltip: _isEraser ? 'Eraser (tap to switch to pen)' : 'Pen (tap to switch to eraser)',
-            icon: Icon(
-              _isEraser ? Icons.cleaning_services : Icons.edit,
-              color: Colors.black,
-            ),
-            isSelected: _isEraser,
-            style: IconButton.styleFrom(
-              backgroundColor: _isEraser ? Colors.black12 : null,
-            ),
-            onPressed: () => setState(
-                () => _tool = _isEraser ? PenTool.pen : PenTool.eraser),
-          ),
-          IconButton(
-            tooltip: 'Refresh screen',
-            icon: const Icon(Icons.autorenew, color: Colors.black),
-            onPressed: _forceRefresh,
-          ),
-        ],
-        bottom: const PreferredSize(
-          preferredSize: Size.fromHeight(1),
-          child: Divider(height: 1, thickness: 1, color: Colors.black12),
-        ),
-      ),
+      appBar: _buildAppBar(),
       body: OnyxSdkPenArea(
         // A 1ms flip of refreshDelay triggers a native full e-ink refresh that
         // clears pen ghosting after page/chapter changes.
         refreshDelay: Duration(milliseconds: 1200 + (_refreshTick % 2)),
         strokeStyle: OnyxStrokeStyle.fountainPen,
-        // White "ink" while erasing keeps the native preview invisible.
         strokeColor: _isEraser ? Colors.white : Colors.black,
         strokeWidth: _penWidth,
         child: _buildBody(),
@@ -557,26 +529,77 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     );
   }
 
+  PreferredSizeWidget _buildAppBar() {
+    return AppBar(
+      titleSpacing: 0,
+      title: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _openPicker,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('$_book $_chapter', style: kTitleStyle(20)),
+            const SizedBox(width: 4),
+            const Icon(Icons.expand_more, size: 18, color: kMuted),
+          ],
+        ),
+      ),
+      actions: [
+        IconButton(
+          tooltip: 'Stroke width',
+          icon: _WidthGlyph(width: _penWidth, active: !_isEraser),
+          onPressed: () =>
+              setState(() => _widthIndex = (_widthIndex + 1) % _widths.length),
+        ),
+        IconButton(
+          tooltip: _isEraser ? 'Eraser — tap for pen' : 'Pen — tap for eraser',
+          icon: _isEraser
+              ? Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    color: kInk,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(Icons.cleaning_services,
+                      size: 18, color: kPaper),
+                )
+              : const Icon(Icons.edit, color: kInk),
+          onPressed: () => setState(
+              () => _tool = _isEraser ? PenTool.pen : PenTool.eraser),
+        ),
+        IconButton(
+          tooltip: 'Refresh screen',
+          icon: const Icon(Icons.autorenew, color: kInk),
+          onPressed: _forceRefresh,
+        ),
+        const SizedBox(width: 4),
+      ],
+    );
+  }
+
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(
-          child: CircularProgressIndicator(color: Colors.black));
+      return const Center(child: CircularProgressIndicator(color: kInk));
     }
     if (_hasError) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.cloud_off, size: 48, color: Colors.black38),
-            const SizedBox(height: 12),
-            const Text("Couldn't load this chapter.",
-                style: TextStyle(fontSize: 16, color: Colors.black54)),
-            const SizedBox(height: 16),
+            const Icon(Icons.cloud_off, size: 44, color: kMuted),
+            const SizedBox(height: 14),
+            Text("Couldn't load this chapter.",
+                style: kTitleStyle(18, weight: FontWeight.w500)
+                    .copyWith(color: kMuted)),
+            const SizedBox(height: 18),
             OutlinedButton(
               onPressed: _loadChapter,
               style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.black,
-                  side: const BorderSide(color: Colors.black26)),
+                foregroundColor: kInk,
+                side: const BorderSide(color: kInk),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(6)),
+              ),
               child: const Text('Try again'),
             ),
           ],
@@ -586,21 +609,22 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final size = Size(
-          constraints.maxWidth - kPagePadding.horizontal,
-          constraints.maxHeight - kPagePadding.vertical,
-        );
-        final pages = _paginate(_verses, size);
-        // Keep the cached page count in sync without rebuilding during layout.
+        final contentWidth =
+            math.min(constraints.maxWidth - kHPadding * 2, kMaxContentWidth);
+        final textWidth = contentWidth - kGutterWidth;
+        final availableHeight = constraints.maxHeight - kPageVPadding.vertical;
+
+        final pages = _paginate(_verses, textWidth, availableHeight);
         if (pages.length != _pageCount) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) setState(() => _pageCount = pages.length);
           });
         }
+
         return PageView.builder(
           controller: _pageController,
-          // Disabled so a horizontal pen stroke never accidentally turns the
-          // page; navigation is via the bottom bar buttons.
+          // Disabled so a horizontal pen stroke can't accidentally turn the
+          // page; navigation is via the bottom bar.
           physics: const NeverScrollableScrollPhysics(),
           itemCount: pages.length,
           onPageChanged: (i) {
@@ -609,18 +633,25 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
           },
           itemBuilder: (context, i) {
             return Padding(
-              padding: kPagePadding,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (final v in pages[i])
-                    VerseWidget(
-                      key: ValueKey(v.id),
-                      verse: v,
-                      penWidth: _penWidth,
-                      isEraser: _isEraser,
-                    ),
-                ],
+              padding: kPageVPadding,
+              child: Center(
+                child: SizedBox(
+                  width: contentWidth,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (i == 0)
+                        ChapterHeader(book: _book, chapter: _chapter),
+                      for (final v in pages[i])
+                        VerseBlock(
+                          key: ValueKey(v.id),
+                          verse: v,
+                          penWidth: _penWidth,
+                          isEraser: _isEraser,
+                        ),
+                    ],
+                  ),
+                ),
               ),
             );
           },
@@ -630,62 +661,69 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   Widget _buildBottomBar() {
-    final atStart = _page == 0 && prevChapterOf(_book, _chapter) == null;
-    final atEnd =
-        _page >= _pageCount - 1 && nextChapterOf(_book, _chapter) == null;
-    return Container(
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: Colors.black12)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: SizedBox(
-          height: 52,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              IconButton(
+    final canPrevChapter = prevChapterOf(_book, _chapter) != null;
+    final canNextChapter = nextChapterOf(_book, _chapter) != null;
+    final atStart = _page == 0 && !canPrevChapter;
+    final atEnd = _page >= _pageCount - 1 && !canNextChapter;
+
+    return SafeArea(
+      top: false,
+      child: SizedBox(
+        height: 56,
+        child: Row(
+          children: [
+            _NavButton(
+                icon: Icons.first_page,
                 tooltip: 'Previous chapter',
-                icon: const Icon(Icons.first_page),
-                color: Colors.black,
-                onPressed:
-                    prevChapterOf(_book, _chapter) == null ? null : _prevChapter,
-              ),
-              IconButton(
+                onPressed: canPrevChapter ? _prevChapter : null),
+            _NavButton(
+                icon: Icons.chevron_left,
                 tooltip: 'Previous page',
-                icon: const Icon(Icons.chevron_left),
-                color: Colors.black,
-                onPressed: atStart ? null : _prevPage,
+                onPressed: atStart ? null : _prevPage),
+            Expanded(
+              child: Center(
+                child: Text(
+                  _pageCount > 0 ? '${_page + 1} / $_pageCount' : '–',
+                  style: GoogleFonts.crimsonPro(
+                      fontSize: 15, color: kMuted, fontWeight: FontWeight.w600),
+                ),
               ),
-              Text(
-                _pageCount > 0 ? '${_page + 1} / $_pageCount' : '–',
-                style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black54),
-              ),
-              IconButton(
+            ),
+            _NavButton(
+                icon: Icons.chevron_right,
                 tooltip: 'Next page',
-                icon: const Icon(Icons.chevron_right),
-                color: Colors.black,
-                onPressed: atEnd ? null : _nextPage,
-              ),
-              IconButton(
+                onPressed: atEnd ? null : _nextPage),
+            _NavButton(
+                icon: Icons.last_page,
                 tooltip: 'Next chapter',
-                icon: const Icon(Icons.last_page),
-                color: Colors.black,
-                onPressed:
-                    nextChapterOf(_book, _chapter) == null ? null : _nextChapter,
-              ),
-            ],
-          ),
+                onPressed: canNextChapter ? _nextChapter : null),
+          ],
         ),
       ),
     );
   }
 }
 
-/// Small visual indicator for the current stroke width in the app bar.
+class _NavButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+  const _NavButton(
+      {required this.icon, required this.tooltip, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      icon: Icon(icon, size: 26),
+      color: kInk,
+      disabledColor: kDisabled,
+      onPressed: onPressed,
+    );
+  }
+}
+
+/// Small bar that visualises the current stroke width in the app bar.
 class _WidthGlyph extends StatelessWidget {
   final double width;
   final bool active;
@@ -701,7 +739,7 @@ class _WidthGlyph extends StatelessWidget {
           width: 18,
           height: width.clamp(2.0, 8.0),
           decoration: BoxDecoration(
-            color: active ? Colors.black : Colors.black38,
+            color: active ? kInk : kDisabled,
             borderRadius: BorderRadius.circular(8),
           ),
         ),
@@ -710,14 +748,50 @@ class _WidthGlyph extends StatelessWidget {
   }
 }
 
+/// Printed-book style chapter header shown at the top of the first page.
+class ChapterHeader extends StatelessWidget {
+  final String book;
+  final int chapter;
+  const ChapterHeader({super.key, required this.book, required this.chapter});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: kChapterHeaderHeight,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            book.toUpperCase(),
+            style: GoogleFonts.crimsonPro(
+              fontSize: 13,
+              letterSpacing: 4,
+              fontWeight: FontWeight.w600,
+              color: kMuted,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '$chapter',
+            style: GoogleFonts.crimsonPro(
+                fontSize: 64, fontWeight: FontWeight.w500, color: kInk),
+          ),
+          const SizedBox(height: 10),
+          Container(width: 44, height: 1, color: kInk),
+        ],
+      ),
+    );
+  }
+}
+
 // --- Verse + handwriting overlay -----------------------------------------
 
-class VerseWidget extends StatefulWidget {
+class VerseBlock extends StatefulWidget {
   final Verse verse;
   final double penWidth;
   final bool isEraser;
 
-  const VerseWidget({
+  const VerseBlock({
     super.key,
     required this.verse,
     required this.penWidth,
@@ -725,10 +799,10 @@ class VerseWidget extends StatefulWidget {
   });
 
   @override
-  State<VerseWidget> createState() => _VerseWidgetState();
+  State<VerseBlock> createState() => _VerseBlockState();
 }
 
-class _VerseWidgetState extends State<VerseWidget> {
+class _VerseBlockState extends State<VerseBlock> {
   late List<Stroke> _strokes;
   Stroke? _active;
 
@@ -810,24 +884,40 @@ class _VerseWidgetState extends State<VerseWidget> {
       onPointerMove: _onMove,
       onPointerUp: _onUp,
       behavior: HitTestBehavior.translucent,
-      child: Stack(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: kVerseSpacing / 2),
-            child: Text.rich(verseSpan(widget.verse)),
-          ),
-          Positioned.fill(
-            child: RepaintBoundary(
-              child: CustomPaint(
-                painter: StrokePainter(
-                  committed: _strokes,
-                  active: () => _active,
-                  repaint: _repaint,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: kVerseSpacing),
+        child: Stack(
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: kGutterWidth,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 6, right: 8),
+                    child: Text(
+                      '${widget.verse.number}',
+                      textAlign: TextAlign.right,
+                      style: kVerseNumberStyle,
+                    ),
+                  ),
+                ),
+                Expanded(child: Text(widget.verse.text, style: kVerseStyle)),
+              ],
+            ),
+            Positioned.fill(
+              child: RepaintBoundary(
+                child: CustomPaint(
+                  painter: StrokePainter(
+                    committed: _strokes,
+                    active: () => _active,
+                    repaint: _repaint,
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -906,12 +996,8 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
   Widget build(BuildContext context) {
     final book = _selected;
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: kPaper,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
-        elevation: 0,
-        foregroundColor: Colors.black,
         leading: book == null
             ? null
             : IconButton(
@@ -919,12 +1005,8 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
                 onPressed: () => setState(() => _selected = null),
               ),
         title: Text(
-          book == null ? 'Books' : book.name,
-          style: const TextStyle(fontWeight: FontWeight.w800),
-        ),
-        bottom: const PreferredSize(
-          preferredSize: Size.fromHeight(1),
-          child: Divider(height: 1, thickness: 1, color: Colors.black12),
+          book == null ? 'Contents' : book.name,
+          style: kTitleStyle(20),
         ),
       ),
       body: book == null ? _buildBookList() : _buildChapterGrid(book),
@@ -935,53 +1017,67 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
     final ot = kBibleBooks.where((b) => b.isOldTestament).toList();
     final nt = kBibleBooks.where((b) => !b.isOldTestament).toList();
     return ListView(
+      padding: const EdgeInsets.only(bottom: 24),
       children: [
         _sectionHeader('Old Testament'),
         ...ot.map(_bookTile),
         _sectionHeader('New Testament'),
         ...nt.map(_bookTile),
-        const SizedBox(height: 16),
       ],
     );
   }
 
   Widget _sectionHeader(String label) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+        padding: const EdgeInsets.fromLTRB(24, 22, 24, 8),
         child: Text(
           label.toUpperCase(),
-          style: const TextStyle(
-              fontSize: 11,
-              letterSpacing: 2,
-              fontWeight: FontWeight.bold,
-              color: Colors.black45),
+          style: GoogleFonts.crimsonPro(
+              fontSize: 12,
+              letterSpacing: 3,
+              fontWeight: FontWeight.w600,
+              color: kMuted),
         ),
       );
 
   Widget _bookTile(BibleBook b) {
     final isCurrent = b.name == widget.currentBook;
-    return ListTile(
-      title: Text(
-        b.name,
-        style: TextStyle(
-          fontSize: 17,
-          fontWeight: isCurrent ? FontWeight.w800 : FontWeight.w500,
-          color: Colors.black,
+    return InkWell(
+      onTap: () => setState(() => _selected = b),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 13),
+        child: Row(
+          children: [
+            if (isCurrent)
+              Container(
+                width: 6,
+                height: 6,
+                margin: const EdgeInsets.only(right: 10),
+                decoration: const BoxDecoration(
+                    color: kInk, shape: BoxShape.circle),
+              ),
+            Expanded(
+              child: Text(
+                b.name,
+                style: kTitleStyle(19,
+                    weight: isCurrent ? FontWeight.w700 : FontWeight.w400),
+              ),
+            ),
+            Text('${b.chapters}',
+                style: GoogleFonts.crimsonPro(color: kMuted, fontSize: 14)),
+          ],
         ),
       ),
-      trailing: Text('${b.chapters}',
-          style: const TextStyle(color: Colors.black38, fontSize: 13)),
-      onTap: () => setState(() => _selected = b),
     );
   }
 
   Widget _buildChapterGrid(BibleBook book) {
     return GridView.builder(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 72,
+        maxCrossAxisExtent: 76,
         childAspectRatio: 1,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 10,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
       ),
       itemCount: book.chapters,
       itemBuilder: (context, i) {
@@ -993,19 +1089,17 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
           borderRadius: BorderRadius.circular(8),
           child: Container(
             decoration: BoxDecoration(
-              border: Border.all(
-                  color: isCurrent ? Colors.black : Colors.black26,
-                  width: isCurrent ? 2 : 1),
+              border: Border.all(color: kInk, width: isCurrent ? 0 : 1),
               borderRadius: BorderRadius.circular(8),
-              color: isCurrent ? Colors.black : Colors.white,
+              color: isCurrent ? kInk : kPaper,
             ),
             alignment: Alignment.center,
             child: Text(
               '$n',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: isCurrent ? Colors.white : Colors.black,
+              style: GoogleFonts.crimsonPro(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: isCurrent ? kPaper : kInk,
               ),
             ),
           ),
