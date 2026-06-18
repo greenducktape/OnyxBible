@@ -89,7 +89,7 @@ class Stroke {
   Map<String, dynamic> toJson() => {
         'points': points.map((p) => p.toJson()).toList(),
         'width': width,
-        'color': color.value,
+        'color': color.toARGB32(),
       };
 
   factory Stroke.fromJson(Map<String, dynamic> json) {
@@ -99,7 +99,7 @@ class Stroke {
           .map((p) => StrokePoint.fromJson(p as Map<String, dynamic>))
           .toList(),
       width: (json['width'] as num?)?.toDouble() ?? 2.5,
-      color: Color(json['color'] as int? ?? Colors.black.value),
+      color: Color(json['color'] as int? ?? Colors.black.toARGB32()),
     );
   }
 

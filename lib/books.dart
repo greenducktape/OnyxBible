@@ -1,6 +1,6 @@
-/// Static data for the 66-book Protestant canon plus small navigation helpers.
-///
-/// Kept free of Flutter imports so it can be reused and unit-tested cheaply.
+// Static data for the 66-book Protestant canon plus small navigation helpers.
+//
+// Kept free of Flutter imports so it can be reused and unit-tested cheaply.
 
 class BibleBook {
   final String name;
