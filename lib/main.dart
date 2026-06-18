@@ -6,16 +6,15 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:http/http.dart' as http;
 import 'package:onyxsdk_pen/onyxsdk_pen.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'books.dart';
+import 'scripture.dart';
 import 'verse.dart';
 
 // Re-export so existing imports of package:boox_bible/main.dart (and tests)
-// continue to see these symbols. scripture.dart is wired into the reader in a
-// follow-up; exporting it now keeps the public surface stable.
+// continue to see these symbols after the model/data extraction.
 export 'verse.dart';
 export 'scripture.dart';
 
@@ -186,51 +185,17 @@ class DrawingStore {
   }
 }
 
-// --- Persistence: scripture text (offline cache) --------------------------
+// --- Pagination cache -----------------------------------------------------
+//
+// Caches the layout (verses split into pages) per book/chapter/size/style.
+// Verse text itself now comes from ScriptureSource (offline bundle), which
+// does its own lightweight caching.
 
-class ChapterStore {
-  static final Map<String, List<Verse>> _memory = {};
-  static final Map<String, List<List<Verse>>> _pageCache = {};
+class PageCache {
+  static final Map<String, List<List<Verse>>> _pages = {};
 
-  static String _key(String book, int chapter) => '${book}_$chapter';
-
-  static List<Verse>? memory(String book, int chapter) =>
-      _memory[_key(book, chapter)];
-
-  static void putMemory(String book, int chapter, List<Verse> verses) =>
-      _memory[_key(book, chapter)] = verses;
-
-  static List<List<Verse>>? pages(String key) => _pageCache[key];
-  static void putPages(String key, List<List<Verse>> pages) =>
-      _pageCache[key] = pages;
-
-  static Future<File> _file(String book, int chapter) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final safe = book.replaceAll(RegExp(r'[^A-Za-z0-9]'), '_');
-    return File('${dir.path}/ch_${safe}_$chapter.json');
-  }
-
-  static Future<List<Verse>?> loadDisk(String book, int chapter) async {
-    try {
-      final f = await _file(book, chapter);
-      if (!await f.exists()) return null;
-      final List<dynamic> data = json.decode(await f.readAsString());
-      return data
-          .map((v) => Verse.fromJson(v as Map<String, dynamic>))
-          .toList();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static Future<void> saveDisk(
-      String book, int chapter, List<Verse> verses) async {
-    try {
-      final f = await _file(book, chapter);
-      await f.writeAsString(
-          json.encode(verses.map((v) => v.toJson()).toList()));
-    } catch (_) {}
-  }
+  static List<List<Verse>>? get(String key) => _pages[key];
+  static void put(String key, List<List<Verse>> pages) => _pages[key] = pages;
 }
 
 // --- Main App -------------------------------------------------------------
@@ -286,6 +251,11 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   String _book = 'John';
   int _chapter = 1;
 
+  // Scripture comes from the bundled (offline) translation by default; other
+  // translations can be swapped in via the registry without touching this code.
+  final ScriptureSource _source =
+      sourceFor(translationById(kDefaultTranslation));
+
   List<Verse> _verses = [];
   bool _isLoading = true;
   bool _hasError = false;
@@ -329,29 +299,16 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       _isLoading = true;
       _hasError = false;
     });
-
-    final cached = ChapterStore.memory(_book, _chapter);
-    if (cached != null) {
-      _applyVerses(cached);
-      return;
-    }
-
-    final disk = await ChapterStore.loadDisk(_book, _chapter);
-    if (disk != null && disk.isNotEmpty) {
-      ChapterStore.putMemory(_book, _chapter, disk);
-      _applyVerses(disk);
-      _prefetchNext();
-      return;
-    }
-
-    final fetched = await _fetch(_book, _chapter);
-    if (fetched != null) {
-      ChapterStore.putMemory(_book, _chapter, fetched);
-      unawaited(ChapterStore.saveDisk(_book, _chapter, fetched));
-      _applyVerses(fetched);
-      _prefetchNext();
-    } else {
-      if (!mounted) return;
+    // Capture the request so a slow load that's been superseded by a newer
+    // navigation doesn't overwrite the screen with stale verses.
+    final book = _book;
+    final chapter = _chapter;
+    try {
+      final verses = await _source.chapter(book, chapter);
+      if (!mounted || book != _book || chapter != _chapter) return;
+      _applyVerses(verses);
+    } catch (_) {
+      if (!mounted || book != _book || chapter != _chapter) return;
       setState(() {
         _isLoading = false;
         _hasError = true;
@@ -368,40 +325,6 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       _page = 0;
     });
     _resetToFirstPage();
-  }
-
-  Future<List<Verse>?> _fetch(String book, int chapter) async {
-    try {
-      final uri = Uri.parse(
-          'https://bible-api.com/${Uri.encodeComponent('$book $chapter')}');
-      final response = await http.get(uri).timeout(const Duration(seconds: 12));
-      if (response.statusCode != 200) return null;
-      final data = json.decode(response.body);
-      final list = data['verses'] as List?;
-      if (list == null) return null;
-      return list
-          .map((v) => Verse(
-                id: '${v['book_name']}_${v['chapter']}_${v['verse']}',
-                number: (v['verse'] as num).toInt(),
-                text: v['text'].toString().trim(),
-              ))
-          .toList();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> _prefetchNext() async {
-    final next = nextChapterOf(_book, _chapter);
-    if (next == null) return;
-    final (nb, nc) = next;
-    if (ChapterStore.memory(nb, nc) != null) return;
-    if (await ChapterStore.loadDisk(nb, nc) != null) return;
-    final fetched = await _fetch(nb, nc);
-    if (fetched != null) {
-      ChapterStore.putMemory(nb, nc, fetched);
-      unawaited(ChapterStore.saveDisk(nb, nc, fetched));
-    }
   }
 
   void _resetToFirstPage() {
@@ -467,9 +390,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       List<Verse> verses, double textWidth, double availableHeight) {
     if (verses.isEmpty) return const [];
 
-    final key =
-        '${_book}_${_chapter}_${textWidth.round()}x${availableHeight.round()}';
-    final cached = ChapterStore.pages(key);
+    final key = '${_source.translationId}_${_book}_${_chapter}_'
+        '${textWidth.round()}x${availableHeight.round()}';
+    final cached = PageCache.get(key);
     if (cached != null) return cached;
 
     final List<List<Verse>> result = [];
@@ -497,7 +420,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     }
     if (current.isNotEmpty) result.add(current);
 
-    ChapterStore.putPages(key, result);
+    PageCache.put(key, result);
     return result;
   }
 

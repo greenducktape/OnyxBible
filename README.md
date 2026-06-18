@@ -36,8 +36,18 @@ triggering rebuilds of neighbouring verses.
 
 ## Scripture source
 
-Text is fetched from [bible-api.com](https://bible-api.com) (World English
-Bible) and cached locally.
+Scripture is **bundled in the app** for fully offline reading. The default
+translation is the **King James Version** (Public Domain), shipped as per-book
+JSON under `assets/bibles/kjv/` and loaded lazily.
+
+The data layer (`lib/scripture.dart`) is multi-translation and multi-language:
+each translation is a folder `assets/bibles/<id>/` plus a `TranslationInfo`
+registry entry, so additional public-domain translations (e.g. World English
+Bible, Spanish Reina-Valera 1909, German Luther 1912) are drop-in additions.
+Non-bundled translations can optionally be fetched from
+[bible-api.com](https://bible-api.com).
+
+KJV text normalized from the public-domain [aruljohn/Bible-kjv](https://github.com/aruljohn/Bible-kjv) dataset.
 
 ## Getting started
 
