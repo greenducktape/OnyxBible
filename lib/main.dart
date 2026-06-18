@@ -10,6 +10,7 @@ import 'package:onyxsdk_pen/onyxsdk_pen.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'books.dart';
+import 'reference.dart';
 import 'scripture.dart';
 import 'settings_store.dart';
 import 'verse.dart';
@@ -281,6 +282,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   // native side run a full e-ink (GC) refresh to clear pen ghosting.
   int _refreshTick = 0;
 
+  // When navigating from search to a specific verse, the page containing it is
+  // selected after pagination; consumed (set to null) once applied.
+  int? _targetVerse;
+
   @override
   void initState() {
     super.initState();
@@ -337,7 +342,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       _hasError = false;
       _page = 0;
     });
-    _resetToFirstPage();
+    // If a search target is pending, the page is chosen during build instead.
+    if (_targetVerse == null) _resetToFirstPage();
   }
 
   void _resetToFirstPage() {
@@ -393,6 +399,17 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       ),
     );
     if (result != null) _goToChapter(result.$1, result.$2);
+  }
+
+  Future<void> _openSearch() async {
+    final ref = await Navigator.of(context).push<BibleRef>(
+      MaterialPageRoute(
+        builder: (_) => SearchScreen(translationId: _source.translationId),
+      ),
+    );
+    if (ref == null) return;
+    _targetVerse = ref.verse;
+    _goToChapter(ref.book, ref.chapter);
   }
 
   // --- Pagination ---------------------------------------------------------
@@ -474,6 +491,11 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       ),
       actions: [
         IconButton(
+          tooltip: 'Search',
+          icon: const Icon(Icons.search, color: kInk),
+          onPressed: _openSearch,
+        ),
+        IconButton(
           tooltip: 'Stroke width',
           icon: _WidthGlyph(width: _penWidth, active: !_isEraser),
           onPressed: () {
@@ -548,6 +570,25 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
         if (pages.length != _pageCount) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) setState(() => _pageCount = pages.length);
+          });
+        }
+
+        // Jump to the page holding a search target verse, once.
+        if (_targetVerse != null) {
+          final tv = _targetVerse!;
+          _targetVerse = null;
+          var target = 0;
+          for (var i = 0; i < pages.length; i++) {
+            if (pages[i].any((v) => v.number == tv)) {
+              target = i;
+              break;
+            }
+          }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || !_pageController.hasClients) return;
+            _pageController.jumpToPage(target);
+            setState(() => _page = target);
+            _forceRefresh();
           });
         }
 
@@ -1035,6 +1076,115 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+// --- Search / jump-to-reference ------------------------------------------
+
+class SearchScreen extends StatefulWidget {
+  final String translationId;
+  const SearchScreen({super.key, required this.translationId});
+
+  @override
+  State<SearchScreen> createState() => _SearchScreenState();
+}
+
+class _SearchScreenState extends State<SearchScreen> {
+  final TextEditingController _controller = TextEditingController();
+  bool _loading = false;
+  bool _searched = false;
+  List<SearchHit> _hits = const [];
+  BibleRef? _ref;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run() async {
+    final q = _controller.text.trim();
+    setState(() {
+      _ref = parseReference(q);
+      _searched = true;
+    });
+    if (q.isEmpty) {
+      setState(() => _hits = const []);
+      return;
+    }
+    setState(() => _loading = true);
+    final hits =
+        await searchBundledTranslation(widget.translationId, q, limit: 200);
+    if (!mounted) return;
+    setState(() {
+      _hits = hits;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kPaper,
+      appBar: AppBar(
+        titleSpacing: 0,
+        title: TextField(
+          controller: _controller,
+          autofocus: true,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => _run(),
+          style: kTitleStyle(18, weight: FontWeight.w500),
+          decoration: const InputDecoration(
+            hintText: 'Search text or go to a reference…',
+            hintStyle: TextStyle(color: kMuted),
+            border: InputBorder.none,
+          ),
+        ),
+        actions: [
+          IconButton(
+            tooltip: 'Search',
+            icon: const Icon(Icons.search, color: kInk),
+            onPressed: _run,
+          ),
+        ],
+      ),
+      body: _buildResults(),
+    );
+  }
+
+  Widget _buildResults() {
+    return ListView(
+      children: [
+        if (_ref != null)
+          ListTile(
+            leading: const Icon(Icons.my_location, color: kInk),
+            title: Text('Go to ${_ref!}', style: kTitleStyle(18)),
+            onTap: () => Navigator.of(context).pop(_ref),
+          ),
+        if (_ref != null) const Divider(height: 1, color: Colors.black12),
+        if (_loading)
+          const Padding(
+            padding: EdgeInsets.all(28),
+            child: Center(child: CircularProgressIndicator(color: kInk)),
+          ),
+        if (!_loading && _searched && _hits.isEmpty && _ref == null)
+          const Padding(
+            padding: EdgeInsets.all(28),
+            child: Center(
+              child: Text('No results', style: TextStyle(color: kMuted)),
+            ),
+          ),
+        if (!_loading)
+          for (final h in _hits)
+            ListTile(
+              title: Text(h.reference,
+                  style: kTitleStyle(16, weight: FontWeight.w700)),
+              subtitle: Text(h.text, style: kVerseStyle.copyWith(fontSize: 16)),
+              onTap: () => Navigator.of(context)
+                  .pop(BibleRef(h.book, h.chapter, h.verse)),
+            ),
+      ],
     );
   }
 }
