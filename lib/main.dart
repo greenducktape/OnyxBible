@@ -12,10 +12,10 @@ import 'package:path_provider/path_provider.dart';
 
 import 'books.dart';
 import 'verse.dart';
-import 'scripture.dart';
 
 // Re-export so existing imports of package:boox_bible/main.dart (and tests)
-// continue to see these symbols after the extraction.
+// continue to see these symbols. scripture.dart is wired into the reader in a
+// follow-up; exporting it now keeps the public surface stable.
 export 'verse.dart';
 export 'scripture.dart';
 

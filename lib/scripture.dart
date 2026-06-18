@@ -13,7 +13,7 @@ String verseId(String book, int chapter, int verse) => '${book}_${chapter}_$vers
 
 /// Metadata for a translation the app can show. Adding a new bundled language
 /// (e.g. Spanish RV1909, German Luther1912) is just: drop its per-book JSON
-/// under assets/bibles/<id>/ and add an entry here.
+/// under `assets/bibles/<id>/` and add an entry here.
 class TranslationInfo {
   final String id; // also the asset folder name, e.g. 'kjv'
   final String displayName;
