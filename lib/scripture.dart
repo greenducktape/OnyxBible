@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 
+import 'books.dart';
 import 'verse.dart';
 
 /// The single, canonical verse-id constructor. Kept identical across every
@@ -135,3 +136,60 @@ class ApiScriptureSource implements ScriptureSource {
 
 ScriptureSource sourceFor(TranslationInfo t) =>
     t.bundled ? BundledScriptureSource(t.id) : ApiScriptureSource(t.id);
+
+class SearchHit {
+  final String book;
+  final int chapter;
+  final int verse;
+  final String text;
+
+  const SearchHit({
+    required this.book,
+    required this.chapter,
+    required this.verse,
+    required this.text,
+  });
+
+  String get reference => '$book $chapter:$verse';
+}
+
+/// Case-insensitive full-text search over a bundled translation. Scans book
+/// assets in canonical order and stops once [limit] hits are collected.
+Future<List<SearchHit>> searchBundledTranslation(
+  String translationId,
+  String query, {
+  int limit = 200,
+}) async {
+  final q = query.trim().toLowerCase();
+  if (q.isEmpty) return const [];
+
+  final hits = <SearchHit>[];
+  for (final book in kBibleBooks) {
+    final path =
+        'assets/bibles/$translationId/${book.name.replaceAll(' ', '_')}.json';
+    Map<String, dynamic> decoded;
+    try {
+      decoded = json.decode(await rootBundle.loadString(path))
+          as Map<String, dynamic>;
+    } catch (_) {
+      continue;
+    }
+    final chapters = decoded['chapters'] as Map<String, dynamic>;
+    for (final entry in chapters.entries) {
+      final ch = int.parse(entry.key);
+      for (final v in entry.value as List) {
+        final m = v as Map<String, dynamic>;
+        final text = m['t'] as String;
+        if (text.toLowerCase().contains(q)) {
+          hits.add(SearchHit(
+              book: book.name,
+              chapter: ch,
+              verse: (m['v'] as num).toInt(),
+              text: text));
+          if (hits.length >= limit) return hits;
+        }
+      }
+    }
+  }
+  return hits;
+}
