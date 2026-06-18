@@ -203,6 +203,116 @@ class PageCache {
   static void put(String key, List<List<Verse>> pages) => _pages[key] = pages;
 }
 
+// --- Undo / redo ----------------------------------------------------------
+//
+// Per-verse undo/redo. DrawingStore is the source of truth; operations mutate
+// it, then the currently-mounted verse (if any) resyncs via the same canvas-only
+// `_repaint` path used for live drawing — so undo never rebuilds widgets or
+// relayouts text.
+
+abstract class _StrokeOp {
+  void apply(String verseId); // (re)do
+  void invert(String verseId); // undo
+}
+
+class _AddStrokeOp extends _StrokeOp {
+  final Stroke stroke;
+  _AddStrokeOp(this.stroke);
+
+  @override
+  void apply(String verseId) =>
+      DrawingStore.setStrokes(verseId, DrawingStore.strokesFor(verseId)..add(stroke));
+
+  @override
+  void invert(String verseId) => DrawingStore.setStrokes(verseId,
+      DrawingStore.strokesFor(verseId)..removeWhere((s) => identical(s, stroke)));
+}
+
+class _EraseStrokesOp extends _StrokeOp {
+  final List<Stroke> removed;
+  _EraseStrokesOp(this.removed);
+
+  @override
+  void apply(String verseId) => DrawingStore.setStrokes(
+      verseId,
+      DrawingStore.strokesFor(verseId)
+        ..removeWhere((s) => removed.any((r) => identical(r, s))));
+
+  @override
+  void invert(String verseId) => DrawingStore.setStrokes(
+      verseId, DrawingStore.strokesFor(verseId)..addAll(removed));
+}
+
+class UndoController {
+  static const int _maxPerVerse = 100;
+  final Map<String, List<_StrokeOp>> _undo = {};
+  final Map<String, List<_StrokeOp>> _redo = {};
+  final Map<String, VoidCallback> _hooks = {}; // mounted verse resync callbacks
+  String? _lastVerse;
+
+  final ValueNotifier<bool> canUndo = ValueNotifier(false);
+  final ValueNotifier<bool> canRedo = ValueNotifier(false);
+
+  void register(String verseId, VoidCallback resync) =>
+      _hooks[verseId] = resync;
+  void unregister(String verseId, VoidCallback resync) {
+    if (_hooks[verseId] == resync) _hooks.remove(verseId);
+  }
+
+  void recordAdd(String verseId, Stroke s) =>
+      _record(verseId, _AddStrokeOp(s));
+  void recordErase(String verseId, List<Stroke> removed) =>
+      _record(verseId, _EraseStrokesOp(removed));
+
+  void _record(String verseId, _StrokeOp op) {
+    final stack = _undo.putIfAbsent(verseId, () => []);
+    stack.add(op);
+    if (stack.length > _maxPerVerse) stack.removeAt(0);
+    _redo[verseId]?.clear();
+    _lastVerse = verseId;
+    _refresh();
+  }
+
+  void undo() {
+    final id = _lastVerse;
+    final stack = id == null ? null : _undo[id];
+    if (id == null || stack == null || stack.isEmpty) return;
+    final op = stack.removeLast();
+    op.invert(id);
+    (_redo.putIfAbsent(id, () => [])).add(op);
+    _hooks[id]?.call();
+    _refresh();
+  }
+
+  void redo() {
+    final id = _lastVerse;
+    final stack = id == null ? null : _redo[id];
+    if (id == null || stack == null || stack.isEmpty) return;
+    final op = stack.removeLast();
+    op.apply(id);
+    (_undo.putIfAbsent(id, () => [])).add(op);
+    _hooks[id]?.call();
+    _refresh();
+  }
+
+  /// Cleared on navigation so undo never reaches into a previous chapter.
+  void clear() {
+    _undo.clear();
+    _redo.clear();
+    _lastVerse = null;
+    _refresh();
+  }
+
+  void _refresh() {
+    final id = _lastVerse;
+    canUndo.value = id != null && (_undo[id]?.isNotEmpty ?? false);
+    canRedo.value = id != null && (_redo[id]?.isNotEmpty ?? false);
+  }
+}
+
+/// App-wide undo controller for handwriting.
+final UndoController kUndo = UndoController();
+
 // --- Main App -------------------------------------------------------------
 
 class BooxBibleApp extends StatelessWidget {
@@ -313,6 +423,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   Future<void> _loadChapter() async {
+    // Undo history is scoped to the chapter being read.
+    kUndo.clear();
     setState(() {
       _isLoading = true;
       _hasError = false;
@@ -490,6 +602,26 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
         ),
       ),
       actions: [
+        ValueListenableBuilder<bool>(
+          valueListenable: kUndo.canUndo,
+          builder: (context, can, _) => IconButton(
+            tooltip: 'Undo',
+            icon: const Icon(Icons.undo),
+            color: kInk,
+            disabledColor: kDisabled,
+            onPressed: can ? () => kUndo.undo() : null,
+          ),
+        ),
+        ValueListenableBuilder<bool>(
+          valueListenable: kUndo.canRedo,
+          builder: (context, can, _) => IconButton(
+            tooltip: 'Redo',
+            icon: const Icon(Icons.redo),
+            color: kInk,
+            disabledColor: kDisabled,
+            onPressed: can ? () => kUndo.redo() : null,
+          ),
+        ),
         IconButton(
           tooltip: 'Search',
           icon: const Icon(Icons.search, color: kInk),
@@ -784,16 +916,28 @@ class _VerseBlockState extends State<VerseBlock> {
 
   static const double _eraseRadius = 16.0;
 
+  // Strokes removed during the current erase gesture, recorded as one undo step.
+  final List<Stroke> _erasedThisGesture = [];
+
   @override
   void initState() {
     super.initState();
     _strokes = DrawingStore.strokesFor(widget.verse.id);
+    kUndo.register(widget.verse.id, _resyncFromStore);
   }
 
   @override
   void dispose() {
+    kUndo.unregister(widget.verse.id, _resyncFromStore);
     _repaint.dispose();
     super.dispose();
+  }
+
+  // Called by the undo controller after it mutates the store for this verse.
+  void _resyncFromStore() {
+    if (!mounted) return;
+    _strokes = DrawingStore.strokesFor(widget.verse.id);
+    _repaint.value++;
   }
 
   bool _isStylus(PointerEvent e) =>
@@ -833,19 +977,24 @@ class _VerseBlockState extends State<VerseBlock> {
       if (_active!.points.length > 1) {
         _strokes.add(_active!);
         DrawingStore.setStrokes(widget.verse.id, _strokes);
+        kUndo.recordAdd(widget.verse.id, _active!);
       }
       _active = null;
       _repaint.value++;
     }
+    if (_erasedThisGesture.isNotEmpty) {
+      kUndo.recordErase(widget.verse.id, List<Stroke>.of(_erasedThisGesture));
+      _erasedThisGesture.clear();
+    }
   }
 
   void _eraseAt(Offset p) {
-    final before = _strokes.length;
-    _strokes.removeWhere((s) => s.isNear(p, _eraseRadius));
-    if (_strokes.length != before) {
-      DrawingStore.setStrokes(widget.verse.id, _strokes);
-      _repaint.value++;
-    }
+    final removed = _strokes.where((s) => s.isNear(p, _eraseRadius)).toList();
+    if (removed.isEmpty) return;
+    _erasedThisGesture.addAll(removed);
+    _strokes.removeWhere((s) => removed.contains(s));
+    DrawingStore.setStrokes(widget.verse.id, _strokes);
+    _repaint.value++;
   }
 
   @override
