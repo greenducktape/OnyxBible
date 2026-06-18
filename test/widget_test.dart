@@ -2,12 +2,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:boox_bible/main.dart';
 
 void main() {
-  testWidgets('Bible reader smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
+  testWidgets('Bible reader builds and shows the default reference',
+      (WidgetTester tester) async {
     await tester.pumpWidget(const BooxBibleApp());
 
-    // Verify that our dummy text is present.
-    expect(find.textContaining('Am Anfang schuf Gott Himmel und Erde.'), findsOneWidget);
-    expect(find.textContaining('(Genesis 1:1)'), findsOneWidget);
+    // First frame: the chapter is still loading (no network in tests), but the
+    // app bar should already show the default book/chapter and a spinner.
+    expect(find.text('JOHN'), findsOneWidget);
+    expect(find.text('Chapter 1'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
   });
 }
