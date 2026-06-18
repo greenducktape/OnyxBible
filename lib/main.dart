@@ -11,16 +11,20 @@ import 'package:path_provider/path_provider.dart';
 
 import 'books.dart';
 import 'scripture.dart';
+import 'settings_store.dart';
 import 'verse.dart';
 
 // Re-export so existing imports of package:boox_bible/main.dart (and tests)
 // continue to see these symbols after the model/data extraction.
 export 'verse.dart';
 export 'scripture.dart';
+export 'settings_store.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await OnyxSdkPenArea.init();
+  await SettingsStore.init();
+  await DrawingStore.init();
   runApp(const BooxBibleApp());
 }
 
@@ -248,13 +252,13 @@ class BibleReaderScreen extends StatefulWidget {
 }
 
 class _BibleReaderScreenState extends State<BibleReaderScreen> {
-  String _book = 'John';
-  int _chapter = 1;
+  // Initialized from persisted settings in initState (resume last position).
+  late String _book;
+  late int _chapter;
 
   // Scripture comes from the bundled (offline) translation by default; other
   // translations can be swapped in via the registry without touching this code.
-  final ScriptureSource _source =
-      sourceFor(translationById(kDefaultTranslation));
+  late ScriptureSource _source;
 
   List<Verse> _verses = [];
   bool _isLoading = true;
@@ -280,7 +284,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   @override
   void initState() {
     super.initState();
-    _init();
+    final s = SettingsStore.value;
+    _book = s.lastBook;
+    _chapter = s.lastChapter;
+    _widthIndex = s.widthIndex.clamp(0, _widths.length - 1).toInt();
+    _source = sourceFor(translationById(s.translation));
+    _loadChapter();
   }
 
   @override
@@ -289,9 +298,13 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     super.dispose();
   }
 
-  Future<void> _init() async {
-    await DrawingStore.init();
-    await _loadChapter();
+  void _persist() {
+    SettingsStore.update(SettingsStore.value.copyWith(
+      lastBook: _book,
+      lastChapter: _chapter,
+      widthIndex: _widthIndex,
+      translation: _source.translationId,
+    ));
   }
 
   Future<void> _loadChapter() async {
@@ -342,6 +355,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       _book = book;
       _chapter = chapter;
     });
+    _persist();
     _loadChapter();
   }
 
@@ -462,8 +476,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
         IconButton(
           tooltip: 'Stroke width',
           icon: _WidthGlyph(width: _penWidth, active: !_isEraser),
-          onPressed: () =>
-              setState(() => _widthIndex = (_widthIndex + 1) % _widths.length),
+          onPressed: () {
+            setState(() => _widthIndex = (_widthIndex + 1) % _widths.length);
+            _persist();
+          },
         ),
         IconButton(
           tooltip: _isEraser ? 'Eraser — tap for pen' : 'Pen — tap for eraser',
