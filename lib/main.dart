@@ -32,22 +32,20 @@ void main() async {
   await PlanStore.init();
   await LibraryStore.init();
   await _bootstrapLibrary();
-  await DrawingStore.useBible(LibraryStore.active.id);
+  if (!LibraryStore.isEmpty) {
+    await DrawingStore.useBible(LibraryStore.active.id);
+  }
   runApp(const BooxBibleApp());
 }
 
-/// Ensures there is at least one printed Bible. Existing users (who have a
-/// settings file) are migrated into a single "default" Bible so their notes and
-/// translation carry over; fresh installs get a default Bible for now (the
-/// setup wizard will replace this branch).
+/// Migrates existing users (who have a settings file) into a single "default"
+/// printed Bible so their notes and translation carry over. Fresh installs are
+/// left with an empty library so the setup wizard runs on first launch.
 Future<void> _bootstrapLibrary() async {
   if (!LibraryStore.isEmpty) return;
-  const id = LibraryStore.defaultId;
   if (await SettingsStore.fileExists()) {
-    await LibraryStore.add(BibleConfig.fromLegacySettings(id, SettingsStore.value));
-  } else {
-    await LibraryStore.add(
-        BibleConfig(id: id, createdAt: DateTime.now().millisecondsSinceEpoch));
+    await LibraryStore.add(BibleConfig.fromLegacySettings(
+        LibraryStore.defaultId, SettingsStore.value));
   }
 }
 
@@ -78,14 +76,35 @@ const EdgeInsets kPageVPadding = EdgeInsets.symmetric(vertical: 16);
 // pages overflow or leave gaps. Reader screen builds it once per frame and
 // threads it through, so it isn't reconstructed per verse.
 
-// Reading text sizes the user can step through. Index 1 (22pt) is the default
-// and matches the app's original fixed size.
-const List<double> kTextSizes = [18, 22, 26, 31, 37];
+// Reading-layout options offered once, in the "Print your Bible" setup. After a
+// Bible is printed these are locked — which is exactly what keeps handwritten
+// notes aligned forever.
+const List<double> kFontSizeOptions = [18, 20, 22, 26, 30, 36];
+const List<String> kFontFamilies = [
+  'Crimson Pro', // serif, default
+  'EB Garamond', // classic serif
+  'Lora', // sturdy serif
+  'Atkinson Hyperlegible', // humanist sans, high legibility on e-ink
+];
+// Fraction of the page width the *text column* occupies; the rest is a blank
+// margin you can write in. Smaller fraction = wider writing margin.
+const List<double> kMarginFractions = [0.96, 0.82, 0.68, 0.55];
+const List<String> kMarginLabels = ['Standard', 'Wide', 'Wider', 'Widest'];
+const List<double> kLineSpacings = [1.4, 1.55, 1.75, 2.0];
+const List<String> kLineSpacingLabels = ['Tight', 'Normal', 'Relaxed', 'Airy'];
 
+/// Verse body style for a printed Bible's locked layout (family/size/spacing).
+TextStyle verseStyleForCfg(BibleConfig c) => GoogleFonts.getFont(
+      c.fontFamily,
+      fontSize: c.fontSizePt,
+      height: kLineSpacings[c.lineSpacingIndex.clamp(0, kLineSpacings.length - 1)],
+      color: kInk,
+    );
+
+/// Plain size-only serif style — used by setup previews and small chrome.
 TextStyle verseStyleOf(double fontSize) =>
     GoogleFonts.crimsonPro(fontSize: fontSize, height: 1.55, color: kInk);
 
-/// Default verse style (22pt). Kept for code/tests that don't vary the size.
 final TextStyle kVerseStyle = verseStyleOf(22);
 final TextStyle kVerseNumberStyle = GoogleFonts.crimsonPro(
   fontSize: 13,
@@ -278,6 +297,14 @@ class DrawingStore {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/bible_notes_v4.json');
   }
+
+  /// Delete a (non-active) Bible's notes when its artifact is removed.
+  static Future<void> discardNotesFor(String id) async {
+    try {
+      final f = await _noteFile(id);
+      if (await f.exists()) await f.delete();
+    } catch (_) {/* best effort */}
+  }
 }
 
 // --- Pagination cache -----------------------------------------------------
@@ -438,8 +465,30 @@ class BooxBibleApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: base.copyWith(textTheme: GoogleFonts.crimsonProTextTheme(base.textTheme)),
-      home: const BibleReaderScreen(),
+      home: const RootScreen(),
     );
+  }
+}
+
+/// Decides the first screen: the setup wizard until a Bible has been "printed",
+/// then the reader.
+class RootScreen extends StatefulWidget {
+  const RootScreen({super.key});
+
+  @override
+  State<RootScreen> createState() => _RootScreenState();
+}
+
+class _RootScreenState extends State<RootScreen> {
+  bool _hasBible = !LibraryStore.isEmpty;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_hasBible) return const BibleReaderScreen();
+    return SetupWizard(onComplete: () async {
+      await DrawingStore.useBible(LibraryStore.active.id);
+      if (mounted) setState(() => _hasBible = true);
+    });
   }
 }
 
@@ -473,9 +522,11 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   double get _penWidth => _widths[_widthIndex];
   bool get _isEraser => _tool == PenTool.eraser;
 
-  // Reading text size (index into kTextSizes).
-  int _textScaleIndex = 1;
-  double get _fontSize => kTextSizes[_textScaleIndex];
+  // The printed Bible whose locked layout this reader renders.
+  late BibleConfig _cfg;
+  TextStyle get _verseStyle => verseStyleForCfg(_cfg);
+  double get _marginFraction =>
+      kMarginFractions[_cfg.marginIndex.clamp(0, kMarginFractions.length - 1)];
 
   // Paging.
   final PageController _pageController = PageController();
@@ -493,13 +544,18 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   @override
   void initState() {
     super.initState();
-    final s = SettingsStore.value;
-    _book = s.lastBook;
-    _chapter = s.lastChapter;
-    _widthIndex = s.widthIndex.clamp(0, _widths.length - 1).toInt();
-    _textScaleIndex = s.textScaleIndex.clamp(0, kTextSizes.length - 1).toInt();
-    _source = sourceFor(translationById(s.translation));
+    _applyActiveBible();
+    _widthIndex =
+        SettingsStore.value.widthIndex.clamp(0, _widths.length - 1).toInt();
     _loadChapter();
+  }
+
+  // Adopt the active printed Bible's locked layout + reading position.
+  void _applyActiveBible() {
+    _cfg = LibraryStore.active;
+    _book = _cfg.lastBook;
+    _chapter = _cfg.lastChapter;
+    _source = sourceFor(translationById(_cfg.translationId));
   }
 
   @override
@@ -509,13 +565,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   void _persist() {
-    SettingsStore.update(SettingsStore.value.copyWith(
-      lastBook: _book,
-      lastChapter: _chapter,
-      widthIndex: _widthIndex,
-      translation: _source.translationId,
-      textScaleIndex: _textScaleIndex,
-    ));
+    // Reading position lives on the (otherwise locked) Bible; stroke width is a
+    // global tool preference, not part of the printed layout.
+    LibraryStore.rememberPosition(_book, _chapter);
+    SettingsStore.update(SettingsStore.value.copyWith(widthIndex: _widthIndex));
   }
 
   Future<void> _loadChapter() async {
@@ -561,165 +614,6 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   void _forceRefresh() => setState(() => _refreshTick++);
-
-  void _setTextScale(int index) {
-    final next = index.clamp(0, kTextSizes.length - 1);
-    if (next == _textScaleIndex) return;
-    setState(() {
-      _textScaleIndex = next;
-      // The page count changes with the size; rebuild from page 0 so we never
-      // land past the (now shorter/longer) end of the chapter.
-      _page = 0;
-    });
-    _persist();
-    _resetToFirstPage();
-    _forceRefresh(); // clear ghosting from the reflow
-  }
-
-  void _setTranslation(String id) {
-    if (id == _source.translationId) return;
-    setState(() {
-      _source = sourceFor(translationById(id));
-      _page = 0;
-    });
-    _persist();
-    // Notes are keyed by language-independent verse ids, so they carry over to
-    // the same verses in the new translation. Pagination is cached per id.
-    _loadChapter();
-  }
-
-  Future<void> _openTranslationSheet() async {
-    final bundled = kTranslations.where((t) => t.bundled).toList();
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: kPaper,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
-      ),
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(24, 20, 24, 8),
-              child: Text('TRANSLATION',
-                  style: TextStyle(
-                      fontSize: 12,
-                      letterSpacing: 3,
-                      fontWeight: FontWeight.w600,
-                      color: kMuted)),
-            ),
-            for (final t in bundled)
-              InkWell(
-                onTap: () {
-                  Navigator.of(context).pop();
-                  _setTranslation(t.id);
-                },
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 24, vertical: 13),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 26,
-                        child: t.id == _source.translationId
-                            ? const Icon(Icons.check, size: 20, color: kInk)
-                            : null,
-                      ),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(t.displayName,
-                                style: kTitleStyle(19,
-                                    weight: t.id == _source.translationId
-                                        ? FontWeight.w700
-                                        : FontWeight.w400)),
-                            Text('${t.language} · ${t.attribution}',
-                                style: GoogleFonts.crimsonPro(
-                                    fontSize: 13, color: kMuted)),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            const SizedBox(height: 12),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _openTextSizeSheet() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: kPaper,
-      showDragHandle: false,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
-      ),
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) {
-          void change(int delta) {
-            _setTextScale(_textScaleIndex + delta);
-            setSheet(() {}); // refresh the sheet's own preview
-          }
-
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('TEXT SIZE',
-                      style: GoogleFonts.crimsonPro(
-                          fontSize: 12,
-                          letterSpacing: 3,
-                          fontWeight: FontWeight.w600,
-                          color: kMuted)),
-                  const SizedBox(height: 18),
-                  Row(
-                    children: [
-                      _SizeStepButton(
-                        label: 'A',
-                        small: true,
-                        onPressed:
-                            _textScaleIndex > 0 ? () => change(-1) : null,
-                      ),
-                      Expanded(
-                        child: Center(
-                          child: Text('Aa',
-                              style: verseStyleOf(_fontSize)
-                                  .copyWith(fontWeight: FontWeight.w600)),
-                        ),
-                      ),
-                      _SizeStepButton(
-                        label: 'A',
-                        small: false,
-                        onPressed: _textScaleIndex < kTextSizes.length - 1
-                            ? () => change(1)
-                            : null,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Center(
-                    child: Text('${_textScaleIndex + 1} of ${kTextSizes.length}',
-                        style: GoogleFonts.crimsonPro(
-                            fontSize: 14, color: kMuted)),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
 
   // --- Navigation ---------------------------------------------------------
 
@@ -770,15 +664,74 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     _goToChapter(ref.book, ref.chapter);
   }
 
-  Future<void> _openSearch() async {
+  // Pushes a screen that may pop a BibleRef (search/notes/plans); on return,
+  // navigates the reader there.
+  Future<void> _openScreen(Widget screen) async {
     final ref = await Navigator.of(context).push<BibleRef>(
-      MaterialPageRoute(
-        builder: (_) => SearchScreen(translationId: _source.translationId),
-      ),
+      MaterialPageRoute(builder: (_) => screen),
     );
     if (ref == null) return;
     _targetVerse = ref.verse;
     _goToChapter(ref.book, ref.chapter);
+  }
+
+  Future<void> _openMenu() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: kPaper,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final item in const [
+              ('search', Icons.search, 'Search'),
+              ('plans', Icons.event_note, 'Reading plans'),
+              ('notes', Icons.gesture, 'My notes'),
+              ('library', Icons.auto_stories_outlined, 'My Bibles'),
+            ])
+              ListTile(
+                leading: Icon(item.$2, color: kInk),
+                title: Text(item.$3, style: kTitleStyle(18)),
+                onTap: () => Navigator.of(context).pop(item.$1),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'search':
+        await _openScreen(SearchScreen(translationId: _source.translationId));
+      case 'plans':
+        await _openScreen(const PlansScreen());
+      case 'notes':
+        await _openScreen(const NotesBrowserScreen());
+      case 'library':
+        await _openLibrary();
+    }
+  }
+
+  Future<void> _openLibrary() async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const LibraryScreen()),
+    );
+    if (changed == true && mounted) await _switchToActiveBible();
+  }
+
+  // Re-open the reader on whichever Bible is now active (after a switch or a new
+  // print): its notes, translation, layout and reading position all change.
+  Future<void> _switchToActiveBible() async {
+    await DrawingStore.useBible(LibraryStore.active.id);
+    kUndo.clear();
+    setState(() {
+      _applyActiveBible();
+      _page = 0;
+    });
+    _loadChapter();
   }
 
   // --- Pagination ---------------------------------------------------------
@@ -787,11 +740,11 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   // number gutter). The first page reserves space for the chapter header.
 
   List<List<Verse>> _paginate(List<Verse> verses, TextStyle verseStyle,
-      double textWidth, double availableHeight) {
+      double textWidth, double availableHeight, double headerReserve) {
     if (verses.isEmpty) return const [];
 
-    final key = '${_source.translationId}_${_book}_${_chapter}_'
-        '${_textScaleIndex}_${textWidth.round()}x${availableHeight.round()}';
+    final key = '${_cfg.id}_${_book}_${_chapter}_'
+        '${textWidth.round()}x${availableHeight.round()}';
     final cached = PageCache.get(key);
     if (cached != null) return cached;
 
@@ -805,9 +758,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       painter.layout(maxWidth: textWidth);
       final vh = painter.height + kVerseSpacing;
 
-      // The first page is shorter because the chapter header sits on top.
+      // The first page is shorter when a chapter header sits on top.
       final cap =
-          result.isEmpty ? availableHeight - kChapterHeaderHeight : availableHeight;
+          result.isEmpty ? availableHeight - headerReserve : availableHeight;
 
       if (h + vh > cap && current.isNotEmpty) {
         result.add(current);
@@ -829,102 +782,114 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: _buildAppBar(),
-      body: OnyxSdkPenArea(
-        // A 1ms flip of refreshDelay triggers a native full e-ink refresh that
-        // clears pen ghosting after page/chapter changes.
-        refreshDelay: Duration(milliseconds: 1200 + (_refreshTick % 2)),
-        strokeStyle: OnyxStrokeStyle.fountainPen,
-        strokeColor: _isEraser ? Colors.white : Colors.black,
-        strokeWidth: _penWidth,
-        child: _buildBody(),
-      ),
-      bottomNavigationBar: _buildBottomBar(),
-    );
-  }
-
-  PreferredSizeWidget _buildAppBar() {
-    return AppBar(
-      titleSpacing: 0,
-      title: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: _openPicker,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
           children: [
-            Text('$_book $_chapter', style: kTitleStyle(20)),
-            const SizedBox(width: 4),
-            const Icon(Icons.expand_more, size: 18, color: kMuted),
+            _buildTopBar(),
+            // The pen-capture area is ONLY the page, so native ink can't land
+            // on the toolbar or the bottom navigation.
+            Expanded(
+              child: OnyxSdkPenArea(
+                // A 1ms flip of refreshDelay triggers a native full e-ink
+                // refresh that clears pen ghosting after page/chapter changes.
+                refreshDelay: Duration(milliseconds: 1200 + (_refreshTick % 2)),
+                strokeStyle: OnyxStrokeStyle.fountainPen,
+                strokeColor: _isEraser ? Colors.white : Colors.black,
+                strokeWidth: _penWidth,
+                child: _buildBody(),
+              ),
+            ),
+            _buildBottomBar(),
           ],
         ),
       ),
-      actions: [
-        ValueListenableBuilder<bool>(
-          valueListenable: kUndo.canUndo,
-          builder: (context, can, _) => IconButton(
-            tooltip: 'Undo',
-            icon: const Icon(Icons.undo),
-            color: kInk,
-            disabledColor: kDisabled,
-            onPressed: can ? () => kUndo.undo() : null,
+    );
+  }
+
+  // A deliberately minimal toolbar — the Bible is the artifact, not an app full
+  // of controls. Only reading/writing tools live here; layout is locked.
+  Widget _buildTopBar() {
+    return Container(
+      height: 52,
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: kDisabled, width: 1)),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Menu',
+            icon: const Icon(Icons.menu, color: kInk),
+            onPressed: _openMenu,
           ),
-        ),
-        ValueListenableBuilder<bool>(
-          valueListenable: kUndo.canRedo,
-          builder: (context, can, _) => IconButton(
-            tooltip: 'Redo',
-            icon: const Icon(Icons.redo),
-            color: kInk,
-            disabledColor: kDisabled,
-            onPressed: can ? () => kUndo.redo() : null,
-          ),
-        ),
-        IconButton(
-          tooltip: 'Search',
-          icon: const Icon(Icons.search, color: kInk),
-          onPressed: _openSearch,
-        ),
-        IconButton(
-          tooltip: 'Text size',
-          icon: const Icon(Icons.format_size, color: kInk),
-          onPressed: _openTextSizeSheet,
-        ),
-        IconButton(
-          tooltip: 'Translation',
-          icon: const Icon(Icons.translate, color: kInk),
-          onPressed: _openTranslationSheet,
-        ),
-        IconButton(
-          tooltip: 'Stroke width',
-          icon: _WidthGlyph(width: _penWidth, active: !_isEraser),
-          onPressed: () {
-            setState(() => _widthIndex = (_widthIndex + 1) % _widths.length);
-            _persist();
-          },
-        ),
-        IconButton(
-          tooltip: _isEraser ? 'Eraser — tap for pen' : 'Pen — tap for eraser',
-          icon: _isEraser
-              ? Container(
-                  padding: const EdgeInsets.all(3),
-                  decoration: BoxDecoration(
-                    color: kInk,
-                    borderRadius: BorderRadius.circular(6),
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _openPicker,
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text('$_book $_chapter',
+                        overflow: TextOverflow.ellipsis,
+                        style: kTitleStyle(20)),
                   ),
-                  child: const Icon(Icons.cleaning_services,
-                      size: 18, color: kPaper),
-                )
-              : const Icon(Icons.edit, color: kInk),
-          onPressed: () => setState(
-              () => _tool = _isEraser ? PenTool.pen : PenTool.eraser),
-        ),
-        IconButton(
-          tooltip: 'Refresh screen',
-          icon: const Icon(Icons.autorenew, color: kInk),
-          onPressed: _forceRefresh,
-        ),
-        const SizedBox(width: 4),
-      ],
+                  const SizedBox(width: 4),
+                  const Icon(Icons.expand_more, size: 18, color: kMuted),
+                ],
+              ),
+            ),
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: kUndo.canUndo,
+            builder: (context, can, _) => IconButton(
+              tooltip: 'Undo',
+              icon: const Icon(Icons.undo),
+              color: kInk,
+              disabledColor: kDisabled,
+              onPressed: can ? () => kUndo.undo() : null,
+            ),
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: kUndo.canRedo,
+            builder: (context, can, _) => IconButton(
+              tooltip: 'Redo',
+              icon: const Icon(Icons.redo),
+              color: kInk,
+              disabledColor: kDisabled,
+              onPressed: can ? () => kUndo.redo() : null,
+            ),
+          ),
+          IconButton(
+            tooltip: 'Stroke width',
+            icon: _WidthGlyph(width: _penWidth, active: !_isEraser),
+            onPressed: () {
+              setState(() => _widthIndex = (_widthIndex + 1) % _widths.length);
+              _persist();
+            },
+          ),
+          IconButton(
+            tooltip: _isEraser ? 'Eraser — tap for pen' : 'Pen — tap for eraser',
+            icon: _isEraser
+                ? Container(
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      color: kInk,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Icon(Icons.cleaning_services,
+                        size: 18, color: kPaper),
+                  )
+                : const Icon(Icons.edit, color: kInk),
+            onPressed: () => setState(
+                () => _tool = _isEraser ? PenTool.pen : PenTool.eraser),
+          ),
+          IconButton(
+            tooltip: 'Refresh screen',
+            icon: const Icon(Icons.autorenew, color: kInk),
+            onPressed: _forceRefresh,
+          ),
+        ],
+      ),
     );
   }
 
@@ -962,12 +927,15 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       builder: (context, constraints) {
         final contentWidth =
             math.min(constraints.maxWidth - kHPadding * 2, kMaxContentWidth);
-        final textWidth = contentWidth - kGutterWidth;
+        final gutter = _cfg.showVerseNumbers ? kGutterWidth : 0.0;
+        final textColumn = contentWidth * _marginFraction; // rest = writing margin
+        final textWidth = textColumn - gutter;
         final availableHeight = constraints.maxHeight - kPageVPadding.vertical;
-        final verseStyle = verseStyleOf(_fontSize);
+        final verseStyle = _verseStyle;
+        final headerReserve = _cfg.showHeadings ? kChapterHeaderHeight : 0.0;
 
-        final pages =
-            _paginate(_verses, verseStyle, textWidth, availableHeight);
+        final pages = _paginate(
+            _verses, verseStyle, textWidth, availableHeight, headerReserve);
         if (pages.length != _pageCount) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) setState(() => _pageCount = pages.length);
@@ -1012,13 +980,15 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      if (i == 0)
+                      if (i == 0 && _cfg.showHeadings)
                         ChapterHeader(book: _book, chapter: _chapter),
                       for (final v in pages[i])
                         VerseBlock(
                           key: ValueKey(v.id),
                           verse: v,
                           verseStyle: verseStyle,
+                          textWidth: textWidth,
+                          showNumber: _cfg.showVerseNumbers,
                           penWidth: _penWidth,
                           isEraser: _isEraser,
                         ),
@@ -1096,41 +1066,7 @@ class _NavButton extends StatelessWidget {
   }
 }
 
-/// A− / A+ stepper button used in the text-size sheet. [small] renders the
-/// "decrease" affordance at a smaller glyph than the "increase" one.
-class _SizeStepButton extends StatelessWidget {
-  final String label;
-  final bool small;
-  final VoidCallback? onPressed;
-  const _SizeStepButton(
-      {required this.label, required this.small, required this.onPressed});
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = onPressed != null;
-    return InkWell(
-      onTap: onPressed,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        width: 64,
-        height: 56,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          border: Border.all(color: enabled ? kInk : kDisabled),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(label,
-            style: GoogleFonts.crimsonPro(
-              fontSize: small ? 18 : 30,
-              fontWeight: FontWeight.w600,
-              color: enabled ? kInk : kDisabled,
-            )),
-      ),
-    );
-  }
-}
-
-/// Small bar that visualises the current stroke width in the app bar.
+/// Small bar that visualises the current stroke width in the toolbar.
 class _WidthGlyph extends StatelessWidget {
   final double width;
   final bool active;
@@ -1196,6 +1132,8 @@ class ChapterHeader extends StatelessWidget {
 class VerseBlock extends StatefulWidget {
   final Verse verse;
   final TextStyle verseStyle;
+  final double textWidth; // width of the text column; the rest is writing margin
+  final bool showNumber;
   final double penWidth;
   final bool isEraser;
 
@@ -1203,6 +1141,8 @@ class VerseBlock extends StatefulWidget {
     super.key,
     required this.verse,
     required this.verseStyle,
+    required this.textWidth,
+    required this.showNumber,
     required this.penWidth,
     required this.isEraser,
   });
@@ -1331,18 +1271,25 @@ class _VerseBlockState extends State<VerseBlock> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SizedBox(
-                  width: kGutterWidth,
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 6, right: 8),
-                    child: Text(
-                      '${widget.verse.number}',
-                      textAlign: TextAlign.right,
-                      style: kVerseNumberStyle,
+                if (widget.showNumber)
+                  SizedBox(
+                    width: kGutterWidth,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 6, right: 8),
+                      child: Text(
+                        '${widget.verse.number}',
+                        textAlign: TextAlign.right,
+                        style: kVerseNumberStyle,
+                      ),
                     ),
                   ),
+                // Fixed-width text column; the blank space after it is margin you
+                // can write in (the ink canvas below spans the whole block).
+                SizedBox(
+                  width: widget.textWidth,
+                  child: Text(widget.verse.text, style: widget.verseStyle),
                 ),
-                Expanded(child: Text(widget.verse.text, style: widget.verseStyle)),
+                const Spacer(),
               ],
             ),
             Positioned.fill(
@@ -2330,4 +2277,498 @@ class _SearchScreenState extends State<SearchScreen> {
       ],
     );
   }
+}
+
+// --- Library: switch between printed Bibles ------------------------------
+
+class LibraryScreen extends StatefulWidget {
+  const LibraryScreen({super.key});
+
+  @override
+  State<LibraryScreen> createState() => _LibraryScreenState();
+}
+
+class _LibraryScreenState extends State<LibraryScreen> {
+  @override
+  Widget build(BuildContext context) {
+    final bibles = LibraryStore.bibles;
+    return Scaffold(
+      backgroundColor: kPaper,
+      appBar: AppBar(title: Text('My Bibles', style: kTitleStyle(20))),
+      body: ListView(
+        padding: const EdgeInsets.only(bottom: 24),
+        children: [
+          for (final b in bibles) _bibleTile(b, bibles.length),
+          const Divider(height: 1, color: kDisabled),
+          ListTile(
+            leading: const Icon(Icons.add, color: kInk),
+            title: Text('Print a new Bible',
+                style: kTitleStyle(18, weight: FontWeight.w600)),
+            subtitle: Text('Pick a translation and layout, then lock it in',
+                style: GoogleFonts.crimsonPro(fontSize: 13, color: kMuted)),
+            onTap: _printNew,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _bibleTile(BibleConfig b, int count) {
+    final active = b.id == LibraryStore.activeId;
+    final t = translationById(b.translationId);
+    return ListTile(
+      leading:
+          Icon(active ? Icons.bookmark : Icons.bookmark_border, color: kInk),
+      title: Text(b.name.isEmpty ? t.displayName : b.name,
+          style: kTitleStyle(18,
+              weight: active ? FontWeight.w700 : FontWeight.w500)),
+      subtitle: Text(
+          '${t.displayName} · ${b.fontFamily} · ${b.fontSizePt.round()}pt',
+          style: GoogleFonts.crimsonPro(fontSize: 13, color: kMuted)),
+      trailing: (!active && count > 1)
+          ? IconButton(
+              icon: const Icon(Icons.delete_outline, color: kMuted),
+              tooltip: 'Delete',
+              onPressed: () => _delete(b),
+            )
+          : null,
+      onTap: () async {
+        await LibraryStore.setActive(b.id);
+        if (mounted) Navigator.of(context).pop(true);
+      },
+    );
+  }
+
+  Future<void> _printNew() async {
+    final created = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const SetupWizard()),
+    );
+    if (created == true && mounted) Navigator.of(context).pop(true);
+  }
+
+  Future<void> _delete(BibleConfig b) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: kPaper,
+        title: Text('Delete this Bible?', style: kTitleStyle(18)),
+        content: Text(
+            'Its handwritten notes will be removed too. This cannot be undone.',
+            style: GoogleFonts.crimsonPro(fontSize: 15, color: kInk)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel', style: TextStyle(color: kMuted))),
+          TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Delete', style: TextStyle(color: kInk))),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await DrawingStore.discardNotesFor(b.id);
+      await LibraryStore.remove(b.id);
+      if (mounted) setState(() {});
+    }
+  }
+}
+
+// --- Setup wizard: "Print your Bible" ------------------------------------
+//
+// A one-time, minimal "crafting" flow. Choices are made here and then locked,
+// which is what keeps notes aligned forever. No printing-press animation (poor
+// on e-ink) — just a short, intentional beat.
+
+class SetupWizard extends StatefulWidget {
+  /// Called when there is no route to pop to (first-run, shown as the app root).
+  final Future<void> Function()? onComplete;
+  const SetupWizard({super.key, this.onComplete});
+
+  @override
+  State<SetupWizard> createState() => _SetupWizardState();
+}
+
+class _SetupWizardState extends State<SetupWizard> {
+  static const int _stepCount = 5;
+  int _step = 0;
+
+  String _translation = kDefaultTranslation;
+  String _family = kFontFamilies.first;
+  double _size = 22;
+  int _margin = 1;
+  int _spacing = 1;
+  bool _verseNumbers = true;
+  bool _headings = true;
+  final TextEditingController _name = TextEditingController();
+  bool _printing = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  TextStyle _sampleStyle() => GoogleFonts.getFont(_family,
+      fontSize: _size, height: kLineSpacings[_spacing], color: kInk);
+
+  Future<void> _print() async {
+    setState(() => _printing = true);
+    final id =
+        LibraryStore.isEmpty ? LibraryStore.defaultId : LibraryStore.newId();
+    await LibraryStore.add(BibleConfig(
+      id: id,
+      name: _name.text.trim(),
+      translationId: _translation,
+      fontFamily: _family,
+      fontSizePt: _size,
+      marginIndex: _margin,
+      lineSpacingIndex: _spacing,
+      showVerseNumbers: _verseNumbers,
+      showHeadings: _headings,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    ));
+    await Future<void>.delayed(const Duration(milliseconds: 900)); // a beat
+    if (!mounted) return;
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop(true);
+    } else {
+      await widget.onComplete?.call();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_printing) {
+      return const Scaffold(
+        backgroundColor: kPaper,
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.menu_book, size: 56, color: kInk),
+              SizedBox(height: 16),
+              Text('Printing your Bible…',
+                  style: TextStyle(fontSize: 18, color: kInk)),
+            ],
+          ),
+        ),
+      );
+    }
+    return Scaffold(
+      backgroundColor: kPaper,
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: Text('Print your Bible', style: kTitleStyle(20)),
+      ),
+      body: Column(
+        children: [
+          _progressDots(),
+          Expanded(
+            child: IndexedStack(
+              index: _step,
+              children: [
+                _translationStep(),
+                _fontStep(),
+                _spaceStep(),
+                _showStep(),
+                _confirmStep(),
+              ],
+            ),
+          ),
+          _navBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _progressDots() => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            for (var i = 0; i < _stepCount; i++)
+              Container(
+                width: 8,
+                height: 8,
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: i <= _step ? kInk : kDisabled,
+                ),
+              ),
+          ],
+        ),
+      );
+
+  Widget _navBar() => SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+          child: Row(
+            children: [
+              if (_step > 0)
+                TextButton(
+                  onPressed: () => setState(() => _step--),
+                  child: Text('Back',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 16, color: kMuted)),
+                ),
+              const Spacer(),
+              FilledButton(
+                onPressed: _step < _stepCount - 1
+                    ? () => setState(() => _step++)
+                    : _print,
+                style: FilledButton.styleFrom(
+                  backgroundColor: kInk,
+                  foregroundColor: kPaper,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: Text(_step < _stepCount - 1 ? 'Continue' : 'Print it'),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  Widget _stepScaffold(String title, String blurb, List<Widget> children) =>
+      ListView(
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+        children: [
+          Text(title, style: kTitleStyle(24, weight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          Text(blurb,
+              style:
+                  GoogleFonts.crimsonPro(fontSize: 15, color: kMuted, height: 1.4)),
+          const SizedBox(height: 20),
+          ...children,
+        ],
+      );
+
+  Widget _radioRow(String label, String? sub, bool selected, VoidCallback onTap) =>
+      InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            children: [
+              Icon(selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                  color: selected ? kInk : kDisabled),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(label,
+                        style: kTitleStyle(18,
+                            weight:
+                                selected ? FontWeight.w700 : FontWeight.w400)),
+                    if (sub != null)
+                      Text(sub,
+                          style: GoogleFonts.crimsonPro(
+                              fontSize: 13, color: kMuted)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  Widget _preview() => Container(
+        margin: const EdgeInsets.only(top: 8),
+        padding: const EdgeInsets.all(16),
+        width: double.infinity,
+        decoration: BoxDecoration(
+          border: Border.all(color: kDisabled),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: LayoutBuilder(builder: (context, c) {
+          final textColumn = c.maxWidth * kMarginFractions[_margin];
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_verseNumbers)
+                SizedBox(
+                  width: kGutterWidth,
+                  child: Text('1',
+                      textAlign: TextAlign.right, style: kVerseNumberStyle),
+                ),
+              SizedBox(
+                width: textColumn - (_verseNumbers ? kGutterWidth : 0),
+                child: Text(
+                    'In the beginning was the Word, and the Word was with '
+                    'God, and the Word was God.',
+                    style: _sampleStyle()),
+              ),
+              const Spacer(),
+            ],
+          );
+        }),
+      );
+
+  Widget _translationStep() => _stepScaffold(
+        'Choose a translation',
+        'This is the text of your Bible. It cannot be changed once printed.',
+        [
+          for (final t in kTranslations.where((t) => t.bundled))
+            _radioRow(t.displayName, '${t.language} · ${t.attribution}',
+                _translation == t.id, () => setState(() => _translation = t.id)),
+        ],
+      );
+
+  Widget _fontStep() => _stepScaffold(
+        'How do you like to read?',
+        'Pick a typeface and size. This sets the feel of every page.',
+        [
+          for (final f in kFontFamilies)
+            _radioRow(f, null, _family == f, () => setState(() => _family = f)),
+          const SizedBox(height: 16),
+          Text('SIZE',
+              style: GoogleFonts.crimsonPro(
+                  fontSize: 12,
+                  letterSpacing: 3,
+                  fontWeight: FontWeight.w600,
+                  color: kMuted)),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (final s in kFontSizeOptions)
+                _chip('${s.round()}', _size == s,
+                    () => setState(() => _size = s)),
+            ],
+          ),
+          _preview(),
+        ],
+      );
+
+  Widget _spaceStep() => _stepScaffold(
+        'How much room to write?',
+        'Wider margins leave blank space beside the text for your notes.',
+        [
+          Text('MARGIN',
+              style: GoogleFonts.crimsonPro(
+                  fontSize: 12,
+                  letterSpacing: 3,
+                  fontWeight: FontWeight.w600,
+                  color: kMuted)),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (var i = 0; i < kMarginLabels.length; i++)
+                _chip(kMarginLabels[i], _margin == i,
+                    () => setState(() => _margin = i)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text('LINE SPACING',
+              style: GoogleFonts.crimsonPro(
+                  fontSize: 12,
+                  letterSpacing: 3,
+                  fontWeight: FontWeight.w600,
+                  color: kMuted)),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (var i = 0; i < kLineSpacingLabels.length; i++)
+                _chip(kLineSpacingLabels[i], _spacing == i,
+                    () => setState(() => _spacing = i)),
+            ],
+          ),
+          _preview(),
+        ],
+      );
+
+  Widget _showStep() => _stepScaffold(
+        'What to show',
+        'A couple of finishing touches for your pages.',
+        [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            activeColor: kInk,
+            title: Text('Verse numbers', style: kTitleStyle(18)),
+            value: _verseNumbers,
+            onChanged: (v) => setState(() => _verseNumbers = v),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            activeColor: kInk,
+            title: Text('Chapter headings', style: kTitleStyle(18)),
+            value: _headings,
+            onChanged: (v) => setState(() => _headings = v),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _name,
+            style: kTitleStyle(18, weight: FontWeight.w500),
+            decoration: InputDecoration(
+              labelText: 'Name or dedication (optional)',
+              labelStyle: const TextStyle(color: kMuted),
+              hintText: 'This Bible belongs to…',
+              enabledBorder: const UnderlineInputBorder(
+                  borderSide: BorderSide(color: kDisabled)),
+              focusedBorder: const UnderlineInputBorder(
+                  borderSide: BorderSide(color: kInk)),
+            ),
+          ),
+        ],
+      );
+
+  Widget _confirmStep() => _stepScaffold(
+        'Ready to print',
+        'Once printed, the layout is locked so your notes always line up. You '
+            'can print another Bible any time.',
+        [
+          _summaryRow('Translation', translationById(_translation).displayName),
+          _summaryRow('Font', '$_family · ${_size.round()}pt'),
+          _summaryRow('Margin', kMarginLabels[_margin]),
+          _summaryRow('Line spacing', kLineSpacingLabels[_spacing]),
+          _summaryRow('Verse numbers', _verseNumbers ? 'On' : 'Off'),
+          _summaryRow('Chapter headings', _headings ? 'On' : 'Off'),
+          if (_name.text.trim().isNotEmpty)
+            _summaryRow('Name', _name.text.trim()),
+          const SizedBox(height: 16),
+          _preview(),
+        ],
+      );
+
+  Widget _summaryRow(String k, String v) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 140,
+              child: Text(k,
+                  style: GoogleFonts.crimsonPro(fontSize: 15, color: kMuted)),
+            ),
+            Expanded(
+              child: Text(v, style: kTitleStyle(16, weight: FontWeight.w600)),
+            ),
+          ],
+        ),
+      );
+
+  Widget _chip(String label, bool selected, VoidCallback onTap) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          decoration: BoxDecoration(
+            color: selected ? kInk : kPaper,
+            border: Border.all(color: kInk),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(label,
+              style: GoogleFonts.crimsonPro(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? kPaper : kInk)),
+        ),
+      );
 }
