@@ -41,9 +41,13 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Signing with the debug keys for now, so the release APK installs
+            // without a keystore (fine for personal sideloading to a Boox).
             signingConfig = signingConfigs.getByName("debug")
+            // No code shrinking: R8 full-mode otherwise errors on optional
+            // Play Core / deferred-component classes the app never uses.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
