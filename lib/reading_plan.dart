@@ -96,17 +96,41 @@ List<BibleRef> chaptersOfTestament({required bool oldTestament}) {
 
 bool _isOldTestament(BibleRef r) => bookByName(r.book).isOldTestament;
 
-/// "Cross-Reference Companion": walks the New Testament one chapter per day and
-/// pairs each with the Old Testament chapter it is most strongly cross-linked
-/// to — Isaiah 53 beside 1 Peter 2, Psalm 22 beside the crucifixion, and so on.
-/// Prefers an OT chapter not yet used so the pairings stay varied; falls back to
-/// the strongest link, then to canonical order when the graph is silent.
-ReadingPlan companionPlan(XrefGraph graph) {
+/// The natural length of the companion plan: one entry per New Testament
+/// chapter (260). Shorter plans group several pairs per reading-day.
+const int companionMaxDays = 260;
+
+/// Evenly regroup a base sequence of single entries into [n] entries, merging
+/// their passages. Used to stretch/compress a plan to a requested length.
+List<PlanDay> _regroup(List<PlanDay> base, int n) {
+  if (n >= base.length) return base;
+  final out = <PlanDay>[];
+  for (var i = 0; i < n; i++) {
+    final start = (i * base.length) ~/ n;
+    final end = ((i + 1) * base.length) ~/ n;
+    final passages = <BibleRef>[];
+    var votes = 0;
+    for (var k = start; k < end; k++) {
+      passages.addAll(base[k].passages);
+      votes += base[k].pairingVotes;
+    }
+    out.add(PlanDay(passages, pairingVotes: votes));
+  }
+  return out;
+}
+
+/// "Cross-Reference Companion": walks the New Testament and pairs each chapter
+/// with the Old Testament chapter it is most strongly cross-linked to — Isaiah
+/// 53 beside 1 Peter 2, Psalm 22 beside the crucifixion, and so on. Prefers an
+/// OT chapter not yet used so pairings stay varied; falls back to the strongest
+/// link, then to canonical order when the graph is silent. The 260 natural
+/// pairs are then regrouped into [days] reading-days (clamped to 1..260).
+ReadingPlan companionPlan(XrefGraph graph, {int days = companionMaxDays}) {
   final nt = chaptersOfTestament(oldTestament: false);
   final usedOt = <BibleRef>{};
   final otFallback = chaptersOfTestament(oldTestament: true);
   var fallbackIdx = 0;
-  final days = <PlanDay>[];
+  final pairs = <PlanDay>[];
 
   for (final ntCh in nt) {
     BibleRef? pick;
@@ -128,17 +152,14 @@ ReadingPlan companionPlan(XrefGraph graph) {
       if (!usedOt.contains(cand)) pick = cand;
     }
     if (pick != null) usedOt.add(pick);
-    days.add(PlanDay(
-      [ntCh, if (pick != null) pick],
-      pairingVotes: votes,
-    ));
+    pairs.add(PlanDay([ntCh, if (pick != null) pick], pairingVotes: votes));
   }
+
   return ReadingPlan(
     id: 'companion',
     title: 'Cross-Reference Companion',
-    subtitle: 'The New Testament, each chapter paired with its Old '
-        'Testament roots',
-    days: days,
+    subtitle: 'New Testament paired with its Old Testament roots',
+    days: _regroup(pairs, days.clamp(1, pairs.length).toInt()),
   );
 }
 
@@ -192,53 +213,60 @@ ReadingPlan wholeBiblePlan(
       id: id, title: title, subtitle: subtitle, days: days);
 }
 
-/// A selectable plan in the UI, with a builder that needs the loaded graph.
+/// A selectable plan *kind*. The reader picks a kind and a length (days); the
+/// builder generates the plan for that length from the loaded graph.
 class PlanInfo {
-  final String id;
+  final String id; // persisted in PlanState.planId
   final String title;
   final String subtitle;
-  final ReadingPlan Function(XrefGraph) build;
+  final int maxDays; // longest sensible length for this kind
+  final int defaultDays;
+  final List<int> presets; // quick-pick lengths shown in the UI
+  final ReadingPlan Function(XrefGraph graph, int days) build;
 
   const PlanInfo({
     required this.id,
     required this.title,
     required this.subtitle,
+    required this.maxDays,
+    required this.defaultDays,
+    required this.presets,
     required this.build,
   });
 }
+
+/// Total chapters in the canon — the longest a whole-Bible plan can run.
+const int wholeBibleChapters = 1189;
 
 const List<PlanInfo> kPlans = [
   PlanInfo(
     id: 'companion',
     title: 'Cross-Reference Companion',
-    subtitle: 'New Testament + its OT roots · 260 days',
-    build: companionPlan,
+    subtitle: 'New Testament paired with its Old Testament roots',
+    maxDays: companionMaxDays,
+    defaultDays: companionMaxDays,
+    presets: [90, 130, 180, companionMaxDays],
+    build: _buildCompanion,
   ),
   PlanInfo(
-    id: 'year',
-    title: 'Whole Bible in a Year',
-    subtitle: 'OT & NT interleaved by cross-reference · 365 days',
-    build: _yearPlan,
-  ),
-  PlanInfo(
-    id: 'twoYear',
-    title: 'Whole Bible in Two Years',
-    subtitle: 'A gentler pace, same cross-reference pairing · 730 days',
-    build: _twoYearPlan,
+    id: 'wholeBible',
+    title: 'Whole Bible',
+    subtitle: 'Old & New Testament interleaved by cross-reference',
+    maxDays: wholeBibleChapters,
+    defaultDays: 365,
+    presets: [180, 365, 730, 1095],
+    build: _buildWholeBible,
   ),
 ];
 
-ReadingPlan _yearPlan(XrefGraph g) => wholeBiblePlan(g,
-    id: 'year',
-    title: 'Whole Bible in a Year',
-    subtitle: 'OT & NT interleaved by cross-reference',
-    totalDays: 365);
+ReadingPlan _buildCompanion(XrefGraph g, int days) =>
+    companionPlan(g, days: days);
 
-ReadingPlan _twoYearPlan(XrefGraph g) => wholeBiblePlan(g,
-    id: 'twoYear',
-    title: 'Whole Bible in Two Years',
-    subtitle: 'OT & NT interleaved by cross-reference',
-    totalDays: 730);
+ReadingPlan _buildWholeBible(XrefGraph g, int days) => wholeBiblePlan(g,
+    id: 'wholeBible',
+    title: 'Whole Bible',
+    subtitle: 'Old & New Testament interleaved by cross-reference',
+    totalDays: days.clamp(1, wholeBibleChapters).toInt());
 
 PlanInfo planInfoById(String id) =>
     kPlans.firstWhere((p) => p.id == id, orElse: () => kPlans.first);

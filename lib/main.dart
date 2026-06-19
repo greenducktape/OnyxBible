@@ -1729,22 +1729,34 @@ class _PlansScreenState extends State<PlansScreen> {
       final graph = await loadXrefGraph();
       if (!mounted) return;
       _graph = graph;
-      final state = PlanStore.value;
-      if (state.hasPlan) {
-        _active = planInfoById(state.planId!).build(graph);
-      }
+      _rebuildActive();
     } catch (_) {
-      // Leave _graph null; the screen shows the plan list without a card.
+      // Leave _graph null; the screen shows the plan chooser without a card.
     }
     if (mounted) setState(() => _loading = false);
   }
 
-  void _start(PlanInfo info) {
+  void _rebuildActive() {
     final g = _graph;
-    if (g == null) return;
-    PlanStore.start(info.id);
-    setState(() => _active = info.build(g));
+    final s = PlanStore.value;
+    _active = (g != null && s.hasPlan)
+        ? planInfoById(s.planId!).build(g, s.totalDays)
+        : null;
   }
+
+  Future<void> _start(PlanInfo info) async {
+    final days = await _chooseLength(info);
+    if (days == null || _graph == null) return;
+    PlanStore.start(info.id, days);
+    setState(_rebuildActive);
+  }
+
+  // Mark the current reading done (advances the self-paced pointer).
+  void _complete() => setState(PlanStore.completeCurrent);
+  void _undo() => setState(PlanStore.uncompleteLast);
+
+  String _summary(PlanDay d) =>
+      d.passages.map((r) => '${r.book} ${r.chapter}').join('  ·  ');
 
   @override
   Widget build(BuildContext context) {
@@ -1753,24 +1765,7 @@ class _PlansScreenState extends State<PlansScreen> {
       appBar: AppBar(title: Text('Reading plans', style: kTitleStyle(20))),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: kInk))
-          : ListView(
-              padding: const EdgeInsets.only(bottom: 28),
-              children: [
-                if (_active != null) _todayCard(_active!),
-                _sectionLabel(_active == null ? 'CHOOSE A PLAN' : 'OTHER PLANS'),
-                ...kPlans.map(_planTile),
-                const SizedBox(height: 24),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: Text(
-                    'Pairings follow real cross-references from the '
-                    'OpenBible.info dataset (CC-BY 4.0).',
-                    style: GoogleFonts.crimsonPro(
-                        fontSize: 13, color: kMuted, height: 1.4),
-                  ),
-                ),
-              ],
-            ),
+          : (_active == null ? _chooseView() : _progressView(_active!)),
     );
   }
 
@@ -1784,90 +1779,177 @@ class _PlansScreenState extends State<PlansScreen> {
                 color: kMuted)),
       );
 
-  Widget _todayCard(ReadingPlan plan) {
-    final epochDay = PlanStore.epochDayNow();
-    final state = PlanStore.value;
-    final dayIdx = state.dayIndexOn(epochDay, plan.length);
-    final day = plan.days[dayIdx];
-    final done = state.completed.contains(dayIdx);
-    final streak = state.streakOn(epochDay, plan.length);
-    final fraction = (state.completed.length / plan.length).clamp(0.0, 1.0);
+  // --- No active plan: choose a kind --------------------------------------
 
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 18, 20, 4),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        border: Border.all(color: kInk, width: 1.5),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _chooseView() => ListView(
+        padding: const EdgeInsets.only(bottom: 28),
         children: [
-          Text(plan.title, style: kTitleStyle(20, weight: FontWeight.w700)),
-          const SizedBox(height: 2),
-          Row(
+          _sectionLabel('CHOOSE A PLAN'),
+          ...kPlans.map(_kindTile),
+          const SizedBox(height: 24),
+          _attribution(),
+        ],
+      );
+
+  Widget _kindTile(PlanInfo info) => InkWell(
+        onTap: () => _start(info),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+          child: Row(
             children: [
-              Text('Day ${dayIdx + 1} of ${plan.length}',
-                  style: GoogleFonts.crimsonPro(fontSize: 14, color: kMuted)),
-              if (streak > 0) ...[
-                const Text('  ·  ',
-                    style: TextStyle(color: kMuted)),
-                Text('$streak-day streak',
-                    style: GoogleFonts.crimsonPro(
-                        fontSize: 14,
-                        color: kInk,
-                        fontWeight: FontWeight.w600)),
-              ],
-            ],
-          ),
-          const SizedBox(height: 14),
-          // Progress bar.
-          ClipRRect(
-            borderRadius: BorderRadius.circular(3),
-            child: Container(
-              height: 6,
-              color: kDisabled,
-              child: FractionallySizedBox(
-                alignment: Alignment.centerLeft,
-                widthFactor: fraction == 0 ? 0.001 : fraction,
-                child: Container(color: kInk),
-              ),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Text("TODAY'S READING",
-              style: GoogleFonts.crimsonPro(
-                  fontSize: 11,
-                  letterSpacing: 2.5,
-                  fontWeight: FontWeight.w600,
-                  color: kMuted)),
-          const SizedBox(height: 6),
-          for (final ref in day.passages)
-            InkWell(
-              onTap: () => Navigator.of(context).pop(ref),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 9),
-                child: Row(
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text('${ref.book} ${ref.chapter}',
-                          style: kTitleStyle(19, weight: FontWeight.w500)),
-                    ),
-                    Icon(bookByName(ref.book).isOldTestament
-                        ? Icons.brightness_2_outlined
-                        : Icons.wb_sunny_outlined,
-                        size: 15, color: kMuted),
-                    const SizedBox(width: 10),
-                    const Icon(Icons.chevron_right, size: 20, color: kMuted),
+                    Text(info.title,
+                        style: kTitleStyle(18, weight: FontWeight.w600)),
+                    const SizedBox(height: 2),
+                    Text(info.subtitle,
+                        style: GoogleFonts.crimsonPro(
+                            fontSize: 14, color: kMuted, height: 1.3)),
                   ],
                 ),
               ),
-            ),
-          if (day.isCrossReferenced)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Row(
-                children: [
+              const SizedBox(width: 12),
+              const Icon(Icons.chevron_right, size: 22, color: kMuted),
+            ],
+          ),
+        ),
+      );
+
+  // --- Active plan: self-paced progress -----------------------------------
+
+  Widget _progressView(ReadingPlan plan) {
+    final s = PlanStore.value;
+    final total = plan.length;
+    final done = s.completedCount.clamp(0, total).toInt();
+    final fraction = total == 0 ? 0.0 : done / total;
+    final finished = done >= total;
+    final current = finished ? null : plan.days[done];
+    final upcoming = <int>[
+      for (var i = done + 1; i < total && i <= done + 5; i++) i,
+    ];
+
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 28),
+      children: [
+        // Header: plan + progress.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 18, 24, 0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(plan.title, style: kTitleStyle(22, weight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Row(children: [
+                Text(
+                    finished
+                        ? 'Finished · $total readings'
+                        : 'Reading ${done + 1} of $total',
+                    style:
+                        GoogleFonts.crimsonPro(fontSize: 14, color: kMuted)),
+                if (s.streak > 0) ...[
+                  Text('   ·   ',
+                      style: GoogleFonts.crimsonPro(color: kMuted)),
+                  Text('${s.streak}-day streak',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 14,
+                          color: kInk,
+                          fontWeight: FontWeight.w600)),
+                ],
+              ]),
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: Container(
+                  height: 6,
+                  color: kDisabled,
+                  child: FractionallySizedBox(
+                    alignment: Alignment.centerLeft,
+                    widthFactor: fraction == 0 ? 0.001 : fraction,
+                    child: Container(color: kInk),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // The current (next) reading — the only thing you're asked to do.
+        if (current != null) _currentCard(done, current) else _finishedCard(),
+
+        // What's coming, so a missed day is never a pile of empty boxes.
+        if (upcoming.isNotEmpty) _sectionLabel('COMING UP'),
+        for (final i in upcoming)
+          _entryRow(label: 'Reading ${i + 1}', day: plan.days[i]),
+
+        if (done > 0) _sectionLabel('ALREADY READ'),
+        for (var i = done - 1; i >= 0 && i >= done - 4; i--)
+          _entryRow(
+              label: 'Reading ${i + 1}', day: plan.days[i], muted: true),
+
+        const SizedBox(height: 20),
+        Center(
+          child: TextButton(
+            onPressed: () => setState(() {
+              PlanStore.clearPlan();
+              _active = null;
+            }),
+            child: Text('Choose a different plan',
+                style: GoogleFonts.crimsonPro(
+                    fontSize: 15, color: kInk, fontWeight: FontWeight.w600)),
+          ),
+        ),
+        const SizedBox(height: 8),
+        _attribution(),
+      ],
+    );
+  }
+
+  Widget _currentCard(int index, PlanDay day) => Container(
+        margin: const EdgeInsets.fromLTRB(20, 18, 20, 4),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          border: Border.all(color: kInk, width: 1.5),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('NEXT READING',
+                style: GoogleFonts.crimsonPro(
+                    fontSize: 11,
+                    letterSpacing: 2.5,
+                    fontWeight: FontWeight.w600,
+                    color: kMuted)),
+            const SizedBox(height: 6),
+            for (final ref in day.passages)
+              InkWell(
+                onTap: () => Navigator.of(context).pop(ref),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text('${ref.book} ${ref.chapter}',
+                            style: kTitleStyle(20, weight: FontWeight.w500)),
+                      ),
+                      Icon(
+                          bookByName(ref.book).isOldTestament
+                              ? Icons.brightness_2_outlined
+                              : Icons.wb_sunny_outlined,
+                          size: 15,
+                          color: kMuted),
+                      const SizedBox(width: 10),
+                      const Icon(Icons.chevron_right, size: 20, color: kMuted),
+                    ],
+                  ),
+                ),
+              ),
+            if (day.isCrossReferenced)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(children: [
                   const Icon(Icons.auto_awesome, size: 14, color: kMuted),
                   const SizedBox(width: 6),
                   Expanded(
@@ -1877,75 +1959,227 @@ class _PlansScreenState extends State<PlansScreen> {
                             color: kMuted,
                             fontStyle: FontStyle.italic)),
                   ),
+                ]),
+              ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _complete,
+                icon: const Icon(Icons.check, size: 20),
+                label: const Text('Mark complete'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: kInk,
+                  foregroundColor: kPaper,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+            if (index > 0)
+              Center(
+                child: TextButton(
+                  onPressed: _undo,
+                  child: Text('Undo last',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 14, color: kMuted)),
+                ),
+              ),
+          ],
+        ),
+      );
+
+  Widget _finishedCard() => Container(
+        margin: const EdgeInsets.fromLTRB(20, 18, 20, 4),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          border: Border.all(color: kInk, width: 1.5),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('You finished this plan.',
+                style: kTitleStyle(20, weight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text('Take a moment — then read on, or start another plan.',
+                style: GoogleFonts.crimsonPro(
+                    fontSize: 15, color: kMuted, height: 1.4)),
+            if (PlanStore.value.completedCount > 0)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: _undo,
+                  child: Text('Reopen last reading',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 14, color: kMuted)),
+                ),
+              ),
+          ],
+        ),
+      );
+
+  Widget _entryRow(
+          {required String label,
+          required PlanDay day,
+          bool muted = false}) =>
+      InkWell(
+        onTap: day.passages.isEmpty
+            ? null
+            : () => Navigator.of(context).pop(day.passages.first),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
+          child: Row(
+            children: [
+              if (muted)
+                const Padding(
+                  padding: EdgeInsets.only(right: 10),
+                  child: Icon(Icons.check, size: 16, color: kMuted),
+                ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(label,
+                        style: GoogleFonts.crimsonPro(
+                            fontSize: 12,
+                            letterSpacing: 1.5,
+                            color: kMuted)),
+                    Text(_summary(day),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: kTitleStyle(17,
+                            weight: muted ? FontWeight.w400 : FontWeight.w500)
+                            .copyWith(color: muted ? kMuted : kInk)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  Widget _attribution() => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Text(
+          'Pairings follow real cross-references from the OpenBible.info '
+          'dataset (CC-BY 4.0).',
+          style:
+              GoogleFonts.crimsonPro(fontSize: 13, color: kMuted, height: 1.4),
+        ),
+      );
+
+  // --- Length chooser ------------------------------------------------------
+
+  Future<int?> _chooseLength(PlanInfo info) {
+    var days = info.defaultDays;
+    return showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: kPaper,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void setDays(int d) =>
+              setSheet(() => days = d.clamp(7, info.maxDays).toInt());
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('HOW MANY DAYS?',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 12,
+                          letterSpacing: 3,
+                          fontWeight: FontWeight.w600,
+                          color: kMuted)),
+                  const SizedBox(height: 4),
+                  Text('${info.title} · about $days readings',
+                      style:
+                          GoogleFonts.crimsonPro(fontSize: 14, color: kMuted)),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final p in info.presets)
+                        _presetChip('$p', selected: days == p,
+                            onTap: () => setDays(p)),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      _stepButton(Icons.remove, () => setDays(days - 5)),
+                      Expanded(
+                        child: Center(
+                          child: Text('$days days',
+                              style: kTitleStyle(24, weight: FontWeight.w600)),
+                        ),
+                      ),
+                      _stepButton(Icons.add, () => setDays(days + 5)),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () => Navigator.of(context).pop(days),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: kInk,
+                        foregroundColor: kPaper,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
+                      child: const Text('Start this plan'),
+                    ),
+                  ),
                 ],
               ),
             ),
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: done
-                ? OutlinedButton.icon(
-                    onPressed: () => setState(
-                        () => PlanStore.toggleDay(dayIdx)),
-                    icon: const Icon(Icons.check_circle, size: 20),
-                    label: const Text('Completed — undo'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: kInk,
-                      side: const BorderSide(color: kInk),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
-                    ),
-                  )
-                : FilledButton.icon(
-                    onPressed: () => setState(
-                        () => PlanStore.toggleDay(dayIdx)),
-                    icon: const Icon(Icons.check, size: 20),
-                    label: const Text('Mark today complete'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: kInk,
-                      foregroundColor: kPaper,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
-                    ),
-                  ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
 
-  Widget _planTile(PlanInfo info) {
-    final isActive = PlanStore.value.planId == info.id;
-    return InkWell(
-      onTap: () => _start(info),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 13),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(info.title,
-                      style: kTitleStyle(18, weight: FontWeight.w600)),
-                  const SizedBox(height: 2),
-                  Text(info.subtitle,
-                      style: GoogleFonts.crimsonPro(
-                          fontSize: 14, color: kMuted, height: 1.3)),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            Text(isActive ? 'Restart' : 'Start',
-                style: GoogleFonts.crimsonPro(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: kInk)),
-          ],
+  Widget _presetChip(String label,
+          {required bool selected, required VoidCallback onTap}) =>
+      InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          decoration: BoxDecoration(
+            color: selected ? kInk : kPaper,
+            border: Border.all(color: kInk),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(label,
+              style: GoogleFonts.crimsonPro(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? kPaper : kInk)),
         ),
-      ),
-    );
-  }
+      );
+
+  Widget _stepButton(IconData icon, VoidCallback onTap) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 52,
+          height: 48,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            border: Border.all(color: kInk),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: kInk),
+        ),
+      );
 }
 
 // --- Search / jump-to-reference ------------------------------------------

@@ -1,6 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:boox_bible/books.dart';
 import 'package:boox_bible/reference.dart';
 import 'package:boox_bible/reading_plan.dart';
+
+bool _isOt(BibleRef r) => bookByName(r.book).isOldTestament;
 
 void main() {
   // A tiny hand-built graph: Isaiah 53 <-> 1 Peter 2 is the strong link.
@@ -57,6 +60,19 @@ void main() {
       for (final d in plan.days) {
         expect(d.passages, isNotEmpty);
       }
+    });
+
+    test('regroups to a shorter length without losing any NT chapter', () {
+      final short = companionPlan(graph, days: 90);
+      expect(short.length, 90);
+      // All 260 NT chapters still appear across the 90 grouped readings.
+      final ntCount =
+          short.days.expand((d) => d.passages).where((r) => !_isOt(r)).length;
+      expect(ntCount, 260);
+    });
+
+    test('clamps a too-long request to the natural maximum', () {
+      expect(companionPlan(graph, days: 5000).length, 260);
     });
   });
 

@@ -2,39 +2,45 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:boox_bible/plan_store.dart';
 
 void main() {
-  test('PlanState round-trips through JSON', () {
+  test('PlanState round-trips through JSON (pointer model)', () {
     const s = PlanState(
-        planId: 'companion', startEpochDay: 20000, completed: {0, 1, 5});
+      planId: 'companion',
+      totalDays: 260,
+      completedCount: 12,
+      startEpochDay: 20000,
+      lastActiveEpochDay: 20011,
+      streak: 4,
+    );
     final r = PlanState.fromJson(s.toJson());
     expect(r.planId, 'companion');
-    expect(r.startEpochDay, 20000);
-    expect(r.completed, {0, 1, 5});
+    expect(r.totalDays, 260);
+    expect(r.completedCount, 12);
+    expect(r.lastActiveEpochDay, 20011);
+    expect(r.streak, 4);
     expect(r.hasPlan, isTrue);
   });
 
-  test('dayIndexOn clamps to the plan window', () {
-    const s = PlanState(planId: 'p', startEpochDay: 100);
-    expect(s.dayIndexOn(100, 365), 0); // day it started
-    expect(s.dayIndexOn(105, 365), 5);
-    expect(s.dayIndexOn(99, 365), 0); // before start
-    expect(s.dayIndexOn(10000, 365), 364); // long after: last day, not past end
+  test('currentIndex points at the next unread reading and clamps when done',
+      () {
+    const a = PlanState(planId: 'p', totalDays: 10, completedCount: 3);
+    expect(a.currentIndex, 3);
+    expect(a.isFinished, isFalse);
+
+    const b = PlanState(planId: 'p', totalDays: 10, completedCount: 10);
+    expect(b.isFinished, isTrue);
+    expect(b.currentIndex, 9); // clamped to last
   });
 
-  test('streakOn counts consecutive completed days ending today/yesterday', () {
-    // Started at day 100; today is day 104 (index 4). Days 2,3,4 done.
-    const s = PlanState(
-        planId: 'p', startEpochDay: 100, completed: {2, 3, 4});
-    expect(s.streakOn(104, 365), 3);
-
-    // Today (index 4) not done, but 2 and 3 are: streak counts to yesterday.
-    const s2 =
-        PlanState(planId: 'p', startEpochDay: 100, completed: {2, 3});
-    expect(s2.streakOn(104, 365), 2);
-
-    // A gap breaks the streak.
-    const s3 =
-        PlanState(planId: 'p', startEpochDay: 100, completed: {0, 1, 4});
-    expect(s3.streakOn(104, 365), 1);
+  test('migrates the legacy calendar format to a pointer', () {
+    // Old v1 state: a 'year' plan with three calendar days checked off.
+    final migrated = PlanState.fromJson({
+      'planId': 'year',
+      'startEpochDay': 19000,
+      'completed': [0, 1, 2],
+    });
+    expect(migrated.planId, 'wholeBible'); // year/twoYear → wholeBible kind
+    expect(migrated.totalDays, 365);
+    expect(migrated.completedCount, 3); // progress preserved
   });
 
   test('epochDayOf advances by one per calendar day', () {
