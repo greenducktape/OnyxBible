@@ -2690,14 +2690,14 @@ class _SetupWizardState extends State<SetupWizard> {
         [
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            activeColor: kInk,
+            activeThumbColor: kInk,
             title: Text('Verse numbers', style: kTitleStyle(18)),
             value: _verseNumbers,
             onChanged: (v) => setState(() => _verseNumbers = v),
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            activeColor: kInk,
+            activeThumbColor: kInk,
             title: Text('Chapter headings', style: kTitleStyle(18)),
             value: _headings,
             onChanged: (v) => setState(() => _headings = v),
