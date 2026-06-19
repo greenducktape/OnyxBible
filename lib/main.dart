@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/gestures.dart' show kSecondaryButton, kTertiaryButton;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:onyxsdk_pen/onyxsdk_pen.dart';
@@ -1178,7 +1179,7 @@ class _VerseBlockState extends State<VerseBlock> {
   // what keeps writing smooth on e-ink.
   final ValueNotifier<int> _repaint = ValueNotifier<int>(0);
 
-  static const double _eraseRadius = 16.0;
+  static const double _eraseRadius = 18.0;
 
   // Latest ink-canvas size, reported by the painter on each paint. Used to
   // stamp capture boxes on new strokes and to hit-test the eraser. The canvas
@@ -1213,8 +1214,13 @@ class _VerseBlockState extends State<VerseBlock> {
       e.kind == PointerDeviceKind.stylus ||
       e.kind == PointerDeviceKind.invertedStylus;
 
+  // Erase when the eraser tool is active, when the pen is flipped to its eraser
+  // end (inverted stylus), OR when a stylus side/eraser button is held — many
+  // e-ink pens report their eraser button as a secondary/tertiary button.
   bool _erasing(PointerEvent e) =>
-      widget.isEraser || e.kind == PointerDeviceKind.invertedStylus;
+      widget.isEraser ||
+      e.kind == PointerDeviceKind.invertedStylus ||
+      (e.buttons & (kSecondaryButton | kTertiaryButton)) != 0;
 
   void _onDown(PointerDownEvent e) {
     if (!_isStylus(e)) return;
@@ -1358,19 +1364,17 @@ class StrokePainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
 
+    // Constant width — the committed ink matches the live pen preview exactly,
+    // so a stroke no longer "fattens" a moment after the pen lifts. (Pressure
+    // is still captured and could drive a subtle taper later if wanted.)
+    paint.strokeWidth = stroke.width;
+
     if (pts.length == 1) {
-      paint.strokeWidth = stroke.width;
       canvas.drawPoints(PointMode.points, [at(pts.first)], paint);
       return;
     }
-
-    // Per-segment width modulation gives a light fountain-pen feel without the
-    // per-point object churn of building many sub-paths.
     for (int i = 0; i < pts.length - 1; i++) {
-      final p0 = pts[i];
-      final p1 = pts[i + 1];
-      paint.strokeWidth = stroke.width * (0.5 + p0.pressure * 0.9);
-      canvas.drawLine(at(p0), at(p1), paint);
+      canvas.drawLine(at(pts[i]), at(pts[i + 1]), paint);
     }
   }
 
