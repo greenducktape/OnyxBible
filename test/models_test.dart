@@ -37,6 +37,46 @@ void main() {
       expect(s.isNear(const Offset(55, 50), 10), isTrue);
       expect(s.isNear(const Offset(70, 70), 10), isFalse);
     });
+
+    test('round-trips the capture box and omits it when unknown', () {
+      final s = Stroke(
+        points: const [StrokePoint(0, 0)],
+        captureW: 300,
+        captureH: 120,
+      );
+      final json = s.toJson();
+      expect(json['cw'], 300);
+      expect(json['ch'], 120);
+      final restored = Stroke.fromJson(json);
+      expect(restored.captureW, 300);
+      expect(restored.captureH, 120);
+
+      // Legacy strokes carry no capture box.
+      final legacy = Stroke(points: const [StrokePoint(0, 0)]);
+      expect(legacy.toJson().containsKey('cw'), isFalse);
+      expect(Stroke.fromJson(legacy.toJson()).captureW, 0);
+    });
+
+    test('scaleTo maps the capture box onto the current canvas', () {
+      final s = Stroke(
+          points: const [StrokePoint(0, 0)], captureW: 100, captureH: 200);
+      expect(s.scaleTo(const Size(200, 400)), (2.0, 2.0));
+      // Unknown capture box or missing canvas is identity.
+      expect(s.scaleTo(null), (1.0, 1.0));
+      expect(Stroke(points: const [StrokePoint(0, 0)]).scaleTo(const Size(50, 50)),
+          (1.0, 1.0));
+    });
+
+    test('isNear hit-tests in rescaled canvas space', () {
+      // Point at (50,50) in a 100x100 capture box maps to (100,100) on a
+      // 200x200 canvas, so the eraser must match there, not at (50,50).
+      final s = Stroke(
+          points: const [StrokePoint(50, 50)], captureW: 100, captureH: 100);
+      expect(s.isNear(const Offset(100, 100), 8, canvas: const Size(200, 200)),
+          isTrue);
+      expect(s.isNear(const Offset(50, 50), 8, canvas: const Size(200, 200)),
+          isFalse);
+    });
   });
 
   group('Verse', () {

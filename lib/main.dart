@@ -91,16 +91,30 @@ class Stroke {
   final double width;
   final Color color;
 
+  // The size of the verse's ink canvas when this stroke was drawn. Strokes are
+  // stored in those capture-time pixel coordinates; at paint time they are
+  // rescaled to the *current* canvas, so notes stay anchored when the layout
+  // changes (font size, screen rotation, different device width).
+  //
+  // 0 means "unknown" — legacy strokes saved before capture boxes existed. They
+  // are drawn 1:1 (exactly as before), never rescaled, so old notes can't shift.
+  final double captureW;
+  final double captureH;
+
   Stroke({
     required this.points,
     this.width = 2.5,
     this.color = Colors.black,
+    this.captureW = 0,
+    this.captureH = 0,
   });
 
   Map<String, dynamic> toJson() => {
         'points': points.map((p) => p.toJson()).toList(),
         'width': width,
         'color': color.toARGB32(),
+        if (captureW > 0) 'cw': captureW,
+        if (captureH > 0) 'ch': captureH,
       };
 
   factory Stroke.fromJson(Map<String, dynamic> json) {
@@ -111,16 +125,31 @@ class Stroke {
           .toList(),
       width: (json['width'] as num?)?.toDouble() ?? 2.5,
       color: Color(json['color'] as int? ?? Colors.black.toARGB32()),
+      captureW: (json['cw'] as num?)?.toDouble() ?? 0,
+      captureH: (json['ch'] as num?)?.toDouble() ?? 0,
     );
+  }
+
+  /// Horizontal/vertical scale that maps this stroke's capture box onto
+  /// [canvas]. Unknown capture boxes (or a missing canvas) map 1:1.
+  (double, double) scaleTo(Size? canvas) {
+    if (canvas == null) return (1, 1);
+    final sx = (captureW > 0 && canvas.width > 0) ? canvas.width / captureW : 1.0;
+    final sy =
+        (captureH > 0 && canvas.height > 0) ? canvas.height / captureH : 1.0;
+    return (sx, sy);
   }
 
   /// True if any point on this stroke is within [radius] of [p]. Used by the
   /// stroke-level eraser so erasing removes the touched mark, not the verse.
-  bool isNear(Offset p, double radius) {
+  /// [p] is in current-canvas coordinates; pass [canvas] so the stroke's
+  /// capture-time points are compared in the same space.
+  bool isNear(Offset p, double radius, {Size? canvas}) {
+    final (sx, sy) = scaleTo(canvas);
     final r2 = radius * radius;
     for (final pt in points) {
-      final dx = pt.x - p.dx;
-      final dy = pt.y - p.dy;
+      final dx = pt.x * sx - p.dx;
+      final dy = pt.y * sy - p.dy;
       if (dx * dx + dy * dy <= r2) return true;
     }
     return false;
@@ -916,6 +945,11 @@ class _VerseBlockState extends State<VerseBlock> {
 
   static const double _eraseRadius = 16.0;
 
+  // Latest ink-canvas size, reported by the painter on each paint. Used to
+  // stamp capture boxes on new strokes and to hit-test the eraser. The canvas
+  // is always painted before it can receive a pointer, so this is set in time.
+  Size? _canvasSize;
+
   // Strokes removed during the current erase gesture, recorded as one undo step.
   final List<Stroke> _erasedThisGesture = [];
 
@@ -956,6 +990,8 @@ class _VerseBlockState extends State<VerseBlock> {
     _active = Stroke(
       points: [StrokePoint(e.localPosition.dx, e.localPosition.dy, e.pressure)],
       width: widget.penWidth,
+      captureW: _canvasSize?.width ?? 0,
+      captureH: _canvasSize?.height ?? 0,
     );
     _repaint.value++;
   }
@@ -989,7 +1025,9 @@ class _VerseBlockState extends State<VerseBlock> {
   }
 
   void _eraseAt(Offset p) {
-    final removed = _strokes.where((s) => s.isNear(p, _eraseRadius)).toList();
+    final removed = _strokes
+        .where((s) => s.isNear(p, _eraseRadius, canvas: _canvasSize))
+        .toList();
     if (removed.isEmpty) return;
     _erasedThisGesture.addAll(removed);
     _strokes.removeWhere((s) => removed.contains(s));
@@ -1032,6 +1070,7 @@ class _VerseBlockState extends State<VerseBlock> {
                     committed: _strokes,
                     active: () => _active,
                     repaint: _repaint,
+                    onPaintSize: (s) => _canvasSize = s,
                   ),
                 ),
               ),
@@ -1047,24 +1086,36 @@ class StrokePainter extends CustomPainter {
   final List<Stroke> committed;
   final Stroke? Function() active;
 
+  // Reports the actual canvas size on every paint. The verse uses it to stamp
+  // capture boxes on new strokes and to hit-test the eraser in canvas space.
+  final ValueChanged<Size>? onPaintSize;
+
   StrokePainter({
     required this.committed,
     required this.active,
     required Listenable repaint,
+    this.onPaintSize,
   }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
+    onPaintSize?.call(size);
     for (final s in committed) {
-      _drawStroke(canvas, s);
+      _drawStroke(canvas, s, size);
     }
     final a = active();
-    if (a != null) _drawStroke(canvas, a);
+    if (a != null) _drawStroke(canvas, a, size);
   }
 
-  void _drawStroke(Canvas canvas, Stroke stroke) {
+  void _drawStroke(Canvas canvas, Stroke stroke, Size size) {
     final pts = stroke.points;
     if (pts.isEmpty) return;
+
+    // Map capture-time coordinates onto the current canvas. For unchanged
+    // layouts (and legacy strokes) this is a 1:1 identity, so the common path
+    // costs only two divisions and a multiply per point.
+    final (sx, sy) = stroke.scaleTo(size);
+    Offset at(StrokePoint p) => Offset(p.x * sx, p.y * sy);
 
     final paint = Paint()
       ..color = stroke.color
@@ -1074,7 +1125,7 @@ class StrokePainter extends CustomPainter {
 
     if (pts.length == 1) {
       paint.strokeWidth = stroke.width;
-      canvas.drawPoints(PointMode.points, [pts.first.toOffset()], paint);
+      canvas.drawPoints(PointMode.points, [at(pts.first)], paint);
       return;
     }
 
@@ -1084,7 +1135,7 @@ class StrokePainter extends CustomPainter {
       final p0 = pts[i];
       final p1 = pts[i + 1];
       paint.strokeWidth = stroke.width * (0.5 + p0.pressure * 0.9);
-      canvas.drawLine(p0.toOffset(), p1.toOffset(), paint);
+      canvas.drawLine(at(p0), at(p1), paint);
     }
   }
 
