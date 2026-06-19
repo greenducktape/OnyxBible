@@ -8,7 +8,7 @@ name: Build APK
 on:
   workflow_dispatch: # lets you trigger a fresh build by hand from the Actions tab
   push:
-    branches: ["claude/onyx-bible-design-perf-sthzli"]
+    branches: ["**"]
 
 permissions:
   contents: write # required to create/update the Release
