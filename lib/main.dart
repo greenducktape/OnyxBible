@@ -1093,7 +1093,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             _forceRefresh();
           },
           itemBuilder: (context, i) {
-            final pageKey = '${_book}_${_chapter}#$i';
+            final pageKey = '${_book}_$_chapter#$i';
             return Stack(
               fit: StackFit.expand,
               children: [
