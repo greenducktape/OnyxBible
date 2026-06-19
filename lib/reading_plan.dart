@@ -240,22 +240,22 @@ const int wholeBibleChapters = 1189;
 
 const List<PlanInfo> kPlans = [
   PlanInfo(
+    id: 'wholeBible',
+    title: 'Whole Bible Cross-Reference',
+    subtitle: 'All 1,189 chapters, Old & New Testament interleaved by cross-reference',
+    maxDays: wholeBibleChapters,
+    defaultDays: 365,
+    presets: [260, 365, 730, 1095, wholeBibleChapters],
+    build: _buildWholeBible,
+  ),
+  PlanInfo(
     id: 'companion',
-    title: 'Cross-Reference Companion',
-    subtitle: 'New Testament paired with its Old Testament roots',
+    title: 'New Testament Companion',
+    subtitle: '260 New Testament chapters paired with Old Testament roots',
     maxDays: companionMaxDays,
     defaultDays: companionMaxDays,
     presets: [90, 130, 180, companionMaxDays],
     build: _buildCompanion,
-  ),
-  PlanInfo(
-    id: 'wholeBible',
-    title: 'Whole Bible',
-    subtitle: 'Old & New Testament interleaved by cross-reference',
-    maxDays: wholeBibleChapters,
-    defaultDays: 365,
-    presets: [180, 365, 730, 1095],
-    build: _buildWholeBible,
   ),
 ];
 
@@ -264,8 +264,8 @@ ReadingPlan _buildCompanion(XrefGraph g, int days) =>
 
 ReadingPlan _buildWholeBible(XrefGraph g, int days) => wholeBiblePlan(g,
     id: 'wholeBible',
-    title: 'Whole Bible',
-    subtitle: 'Old & New Testament interleaved by cross-reference',
+    title: 'Whole Bible Cross-Reference',
+    subtitle: 'All 1,189 chapters, Old & New Testament interleaved by cross-reference',
     totalDays: days.clamp(1, wholeBibleChapters).toInt());
 
 PlanInfo planInfoById(String id) =>
