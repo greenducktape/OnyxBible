@@ -91,6 +91,10 @@ class SettingsStore {
     });
   }
 
+  /// Whether a settings file was ever written — i.e. this is an existing user,
+  /// used to decide whether to migrate them into the new Bible library.
+  static Future<bool> fileExists() async => (await _file()).exists();
+
   static Future<File> _file() async {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/settings_v1.json');

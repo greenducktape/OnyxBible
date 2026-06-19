@@ -11,6 +11,7 @@ import 'package:onyxsdk_pen/onyxsdk_pen.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'books.dart';
+import 'library_store.dart';
 import 'plan_store.dart';
 import 'reading_plan.dart';
 import 'reference.dart';
@@ -29,8 +30,25 @@ void main() async {
   await OnyxSdkPenArea.init();
   await SettingsStore.init();
   await PlanStore.init();
-  await DrawingStore.init();
+  await LibraryStore.init();
+  await _bootstrapLibrary();
+  await DrawingStore.useBible(LibraryStore.active.id);
   runApp(const BooxBibleApp());
+}
+
+/// Ensures there is at least one printed Bible. Existing users (who have a
+/// settings file) are migrated into a single "default" Bible so their notes and
+/// translation carry over; fresh installs get a default Bible for now (the
+/// setup wizard will replace this branch).
+Future<void> _bootstrapLibrary() async {
+  if (!LibraryStore.isEmpty) return;
+  const id = LibraryStore.defaultId;
+  if (await SettingsStore.fileExists()) {
+    await LibraryStore.add(BibleConfig.fromLegacySettings(id, SettingsStore.value));
+  } else {
+    await LibraryStore.add(
+        BibleConfig(id: id, createdAt: DateTime.now().millisecondsSinceEpoch));
+  }
 }
 
 // --- E-ink design tokens --------------------------------------------------
@@ -174,29 +192,43 @@ class Stroke {
 class DrawingStore {
   static final Map<String, List<Stroke>> _notes = {};
   static Timer? _saveDebouncer;
-  static bool _loaded = false;
+  static String? _bibleId;
 
-  static Future<void> init() async {
-    if (_loaded) return;
+  /// Open a Bible's note set (`notes_<id>.json`), flushing the previous one.
+  /// Notes are scoped per printed Bible so each artifact keeps its own marks.
+  static Future<void> useBible(String id) async {
+    if (_bibleId == id) return;
+    _saveDebouncer?.cancel();
+    if (_bibleId != null) await _save();
+    _bibleId = id;
+    _notes.clear();
+    await _load();
+  }
+
+  static Future<void> _load() async {
+    final id = _bibleId;
+    if (id == null) return;
     try {
-      final file = await _getFile();
+      var file = await _noteFile(id);
+      // Adopt the pre-library global notes into the first Bible, exactly once.
+      if (id == LibraryStore.defaultId && !await file.exists()) {
+        final legacy = await _legacyFile();
+        if (await legacy.exists()) file = legacy;
+      }
       if (await file.exists()) {
         final content = await file.readAsString();
         if (content.isNotEmpty) {
           final Map<String, dynamic> data = json.decode(content);
-          _notes
-            ..clear()
-            ..addAll(data.map((key, value) => MapEntry(
-                key,
-                (value as List)
-                    .map((s) => Stroke.fromJson(s as Map<String, dynamic>))
-                    .toList())));
+          _notes.addAll(data.map((key, value) => MapEntry(
+              key,
+              (value as List)
+                  .map((s) => Stroke.fromJson(s as Map<String, dynamic>))
+                  .toList())));
         }
       }
     } catch (e) {
       debugPrint('Error loading notes: $e');
     }
-    _loaded = true;
   }
 
   /// Returns the persisted strokes for a verse. Callers own a copy.
@@ -221,19 +253,28 @@ class DrawingStore {
 
   static void _triggerSave() {
     _saveDebouncer?.cancel();
-    _saveDebouncer = Timer(const Duration(milliseconds: 800), () async {
-      try {
-        final file = await _getFile();
-        final data = _notes.map(
-            (key, value) => MapEntry(key, value.map((s) => s.toJson()).toList()));
-        await file.writeAsString(json.encode(data));
-      } catch (e) {
-        debugPrint('Error saving notes: $e');
-      }
-    });
+    _saveDebouncer = Timer(const Duration(milliseconds: 800), _save);
   }
 
-  static Future<File> _getFile() async {
+  static Future<void> _save() async {
+    final id = _bibleId;
+    if (id == null) return;
+    try {
+      final file = await _noteFile(id);
+      final data = _notes.map(
+          (key, value) => MapEntry(key, value.map((s) => s.toJson()).toList()));
+      await file.writeAsString(json.encode(data));
+    } catch (e) {
+      debugPrint('Error saving notes: $e');
+    }
+  }
+
+  static Future<File> _noteFile(String id) async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/notes_$id.json');
+  }
+
+  static Future<File> _legacyFile() async {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/bible_notes_v4.json');
   }
