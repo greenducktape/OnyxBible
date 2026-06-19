@@ -52,10 +52,20 @@ const List<TranslationInfo> kTranslations = [
     bundled: true,
     attribution: 'Public Domain',
   ),
-  // Planned additions (bundled, public domain):
-  //   WEB  — World English Bible (English, modern)
-  //   rv1909 — Reina-Valera 1909 (Spanish)
-  //   luther1912 — Luther 1912 (German)
+  TranslationInfo(
+    id: 'rv1909',
+    displayName: 'Reina-Valera 1909',
+    language: 'Español',
+    bundled: true,
+    attribution: 'Dominio público',
+  ),
+  TranslationInfo(
+    id: 'luther1912',
+    displayName: 'Luther 1912',
+    language: 'Deutsch',
+    bundled: true,
+    attribution: 'Gemeinfrei (Public Domain)',
+  ),
   // Additional translations may also be served via ApiScriptureSource.
 ];
 

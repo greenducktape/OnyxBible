@@ -25,6 +25,32 @@ void main() {
     expect(kjv.language, 'English');
   });
 
+  test('Spanish and German are registered as bundled, public-domain', () {
+    for (final id in ['rv1909', 'luther1912']) {
+      final t = translationById(id);
+      expect(t.bundled, isTrue);
+      expect(t.id, id);
+    }
+    expect(translationById('rv1909').language, 'Español');
+    expect(translationById('luther1912').language, 'Deutsch');
+  });
+
+  group('bundled multilingual assets', () {
+    test('Reina-Valera 1909 John 3:16 loads in Spanish', () async {
+      final verses = await BundledScriptureSource('rv1909').chapter('John', 3);
+      final v16 = verses.firstWhere((v) => v.number == 16);
+      expect(v16.id, 'John_3_16'); // ids stay language-independent
+      expect(v16.text.toLowerCase(), contains('dios'));
+    });
+
+    test('Luther 1912 John 3:16 loads in German', () async {
+      final verses =
+          await BundledScriptureSource('luther1912').chapter('John', 3);
+      final v16 = verses.firstWhere((v) => v.number == 16);
+      expect(v16.text.toLowerCase(), contains('gott'));
+    });
+  });
+
   group('bundled KJV assets', () {
     final src = BundledScriptureSource('kjv');
 

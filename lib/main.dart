@@ -534,6 +534,83 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     _forceRefresh(); // clear ghosting from the reflow
   }
 
+  void _setTranslation(String id) {
+    if (id == _source.translationId) return;
+    setState(() {
+      _source = sourceFor(translationById(id));
+      _page = 0;
+    });
+    _persist();
+    // Notes are keyed by language-independent verse ids, so they carry over to
+    // the same verses in the new translation. Pagination is cached per id.
+    _loadChapter();
+  }
+
+  Future<void> _openTranslationSheet() async {
+    final bundled = kTranslations.where((t) => t.bundled).toList();
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kPaper,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 20, 24, 8),
+              child: Text('TRANSLATION',
+                  style: TextStyle(
+                      fontSize: 12,
+                      letterSpacing: 3,
+                      fontWeight: FontWeight.w600,
+                      color: kMuted)),
+            ),
+            for (final t in bundled)
+              InkWell(
+                onTap: () {
+                  Navigator.of(context).pop();
+                  _setTranslation(t.id);
+                },
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 13),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 26,
+                        child: t.id == _source.translationId
+                            ? const Icon(Icons.check, size: 20, color: kInk)
+                            : null,
+                      ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(t.displayName,
+                                style: kTitleStyle(19,
+                                    weight: t.id == _source.translationId
+                                        ? FontWeight.w700
+                                        : FontWeight.w400)),
+                            Text('${t.language} · ${t.attribution}',
+                                style: GoogleFonts.crimsonPro(
+                                    fontSize: 13, color: kMuted)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _openTextSizeSheet() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -769,6 +846,11 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
           tooltip: 'Text size',
           icon: const Icon(Icons.format_size, color: kInk),
           onPressed: _openTextSizeSheet,
+        ),
+        IconButton(
+          tooltip: 'Translation',
+          icon: const Icon(Icons.translate, color: kInk),
+          onPressed: _openTranslationSheet,
         ),
         IconButton(
           tooltip: 'Stroke width',

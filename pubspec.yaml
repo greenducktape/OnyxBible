@@ -65,6 +65,8 @@ flutter:
   # book. Listing the directory bundles every file inside it.
   assets:
     - assets/bibles/kjv/
+    - assets/bibles/rv1909/ # Reina-Valera 1909 (Spanish, public domain)
+    - assets/bibles/luther1912/ # Luther 1912 (German, public domain)
     # Chapter cross-reference graph for reading plans (built from the
     # OpenBible.info dataset, CC-BY 4.0; see tool/build_xref.py).
     - assets/data/xref_chapters.json
