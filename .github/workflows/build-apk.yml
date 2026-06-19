@@ -1,0 +1,52 @@
+name: Build APK
+
+# Produces an installable Android APK and attaches it to a GitHub Release so it
+# can be downloaded straight onto a Boox and sideloaded — no Android Studio
+# needed. The release build is debug-signed (see android/app/build.gradle.kts),
+# which is fine for personal sideloading.
+
+on:
+  workflow_dispatch: # lets you trigger a fresh build by hand from the Actions tab
+  push:
+    branches: ["claude/onyx-bible-design-perf-sthzli"]
+
+permissions:
+  contents: write # required to create/update the Release
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build release APK (debug-signed, installable)
+        run: flutter build apk --release
+
+      - name: Rename APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk onyx-bible.apk
+
+      - name: Upload APK as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-bible-apk
+          path: onyx-bible.apk
+
+      - name: Publish APK to the 'latest' Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create latest \
+            --title "Onyx Bible — latest build" \
+            --notes "Sideload onyx-bible.apk onto your Boox. Built from ${{ github.sha }}." \
+            --target "${{ github.sha }}" || true
+          gh release upload latest onyx-bible.apk --clobber
