@@ -515,7 +515,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   bool _hasError = false;
 
   // Drawing tools.
-  static const List<double> _widths = [2.0, 3.5, 6.0];
+  static const List<double> _widths = [1.0, 1.5, 2.0, 3.0, 4.5, 6.0, 8.0, 10.0];
   int _widthIndex = 1;
   PenTool _tool = PenTool.pen;
 
@@ -636,13 +636,49 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     if (p != null) _goToChapter(p.$1, p.$2);
   }
 
+  Future<List<BibleRef>?> _currentPlanPassages() async {
+    final s = PlanStore.value;
+    if (!s.hasPlan || s.isFinished) return null;
+    try {
+      final graph = await loadXrefGraph();
+      final plan = planInfoById(s.planId!).build(graph, s.totalDays);
+      if (s.completedCount >= plan.days.length) return null;
+      return plan.days[s.completedCount].passages;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _advanceWithinReadingPlan() async {
+    final passages = await _currentPlanPassages();
+    if (passages == null || passages.isEmpty) return false;
+    final here = passages.indexWhere((r) => r.book == _book && r.chapter == _chapter);
+    if (here < 0) return false;
+    if (here + 1 < passages.length) {
+      final next = passages[here + 1];
+      _goToChapter(next.book, next.chapter);
+      return true;
+    }
+    PlanStore.completeCurrent();
+    final nextPassages = await _currentPlanPassages();
+    final next = nextPassages?.isNotEmpty == true ? nextPassages!.first : null;
+    if (next != null) {
+      _goToChapter(next.book, next.chapter);
+    }
+    return true;
+  }
+
   void _nextPage() {
     if (_page < _pageCount - 1) {
       _pageController.jumpToPage(_page + 1);
     } else {
-      _nextChapter();
+      unawaited(_advanceWithinReadingPlan().then((handled) {
+        if (!handled && mounted) _nextChapter();
+      }));
     }
   }
+
+  String _pageInkId(int pageIndex) => 'page|${_cfg.id}|$_book|$_chapter|$pageIndex';
 
   void _prevPage() {
     if (_page > 0) {
@@ -977,22 +1013,25 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
               child: Center(
                 child: SizedBox(
                   width: contentWidth,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (i == 0 && _cfg.showHeadings)
-                        ChapterHeader(book: _book, chapter: _chapter),
-                      for (final v in pages[i])
-                        VerseBlock(
-                          key: ValueKey(v.id),
-                          verse: v,
-                          verseStyle: verseStyle,
-                          textWidth: textWidth,
-                          showNumber: _cfg.showVerseNumbers,
-                          penWidth: _penWidth,
-                          isEraser: _isEraser,
-                        ),
-                    ],
+                  child: PageInkCanvas(
+                    pageId: _pageInkId(i),
+                    penWidth: _penWidth,
+                    isEraser: _isEraser,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (i == 0 && _cfg.showHeadings)
+                          ChapterHeader(book: _book, chapter: _chapter),
+                        for (final v in pages[i])
+                          VerseBlock(
+                            key: ValueKey(v.id),
+                            verse: v,
+                            verseStyle: verseStyle,
+                            textWidth: textWidth,
+                            showNumber: _cfg.showVerseNumbers,
+                          ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1129,13 +1168,11 @@ class ChapterHeader extends StatelessWidget {
 
 // --- Verse + handwriting overlay -----------------------------------------
 
-class VerseBlock extends StatefulWidget {
+class VerseBlock extends StatelessWidget {
   final Verse verse;
   final TextStyle verseStyle;
   final double textWidth; // width of the text column; the rest is writing margin
   final bool showNumber;
-  final double penWidth;
-  final bool isEraser;
 
   const VerseBlock({
     super.key,
@@ -1143,51 +1180,94 @@ class VerseBlock extends StatefulWidget {
     required this.verseStyle,
     required this.textWidth,
     required this.showNumber,
-    required this.penWidth,
-    required this.isEraser,
   });
 
   @override
-  State<VerseBlock> createState() => _VerseBlockState();
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: kVerseSpacing),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (showNumber)
+            SizedBox(
+              width: kGutterWidth,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 6, right: 8),
+                child: Text(
+                  '${verse.number}',
+                  textAlign: TextAlign.right,
+                  style: kVerseNumberStyle,
+                ),
+              ),
+            ),
+          SizedBox(
+            width: textWidth,
+            child: Text(verse.text, style: verseStyle),
+          ),
+          const Spacer(),
+        ],
+      ),
+    );
+  }
 }
 
-class _VerseBlockState extends State<VerseBlock> {
+class PageInkCanvas extends StatefulWidget {
+  final String pageId;
+  final double penWidth;
+  final bool isEraser;
+  final Widget child;
+
+  const PageInkCanvas({
+    super.key,
+    required this.pageId,
+    required this.penWidth,
+    required this.isEraser,
+    required this.child,
+  });
+
+  @override
+  State<PageInkCanvas> createState() => _PageInkCanvasState();
+}
+
+class _PageInkCanvasState extends State<PageInkCanvas> {
   late List<Stroke> _strokes;
   Stroke? _active;
-
-  // Drives the stroke CustomPaint directly. Mutating points + bumping this
-  // repaints ONLY the canvas — no widget rebuild, no text relayout. This is
-  // what keeps writing smooth on e-ink.
   final ValueNotifier<int> _repaint = ValueNotifier<int>(0);
-
   static const double _eraseRadius = 18.0;
-
-  // Latest ink-canvas size, reported by the painter on each paint. Used to
-  // stamp capture boxes on new strokes and to hit-test the eraser. The canvas
-  // is always painted before it can receive a pointer, so this is set in time.
   Size? _canvasSize;
-
-  // Strokes removed during the current erase gesture, recorded as one undo step.
   final List<Stroke> _erasedThisGesture = [];
 
   @override
   void initState() {
     super.initState();
-    _strokes = DrawingStore.strokesFor(widget.verse.id);
-    kUndo.register(widget.verse.id, _resyncFromStore);
+    _strokes = DrawingStore.strokesFor(widget.pageId);
+    kUndo.register(widget.pageId, _resyncFromStore);
+  }
+
+  @override
+  void didUpdateWidget(covariant PageInkCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.pageId != widget.pageId) {
+      kUndo.unregister(oldWidget.pageId, _resyncFromStore);
+      _strokes = DrawingStore.strokesFor(widget.pageId);
+      _active = null;
+      _erasedThisGesture.clear();
+      kUndo.register(widget.pageId, _resyncFromStore);
+      _repaint.value++;
+    }
   }
 
   @override
   void dispose() {
-    kUndo.unregister(widget.verse.id, _resyncFromStore);
+    kUndo.unregister(widget.pageId, _resyncFromStore);
     _repaint.dispose();
     super.dispose();
   }
 
-  // Called by the undo controller after it mutates the store for this verse.
   void _resyncFromStore() {
     if (!mounted) return;
-    _strokes = DrawingStore.strokesFor(widget.verse.id);
+    _strokes = DrawingStore.strokesFor(widget.pageId);
     _repaint.value++;
   }
 
@@ -1195,9 +1275,6 @@ class _VerseBlockState extends State<VerseBlock> {
       e.kind == PointerDeviceKind.stylus ||
       e.kind == PointerDeviceKind.invertedStylus;
 
-  // Erase when the eraser tool is active, when the pen is flipped to its eraser
-  // end (inverted stylus), OR when a stylus side/eraser button is held — many
-  // e-ink pens report their eraser button as a secondary/tertiary button.
   bool _erasing(PointerEvent e) =>
       widget.isEraser ||
       e.kind == PointerDeviceKind.invertedStylus ||
@@ -1225,23 +1302,22 @@ class _VerseBlockState extends State<VerseBlock> {
       return;
     }
     if (_active == null) return;
-    _active!.points
-        .add(StrokePoint(e.localPosition.dx, e.localPosition.dy, e.pressure));
-    _repaint.value++; // repaint canvas only
+    _active!.points.add(StrokePoint(e.localPosition.dx, e.localPosition.dy, e.pressure));
+    _repaint.value++;
   }
 
   void _onUp(PointerUpEvent e) {
     if (_active != null) {
       if (_active!.points.length > 1) {
         _strokes.add(_active!);
-        DrawingStore.setStrokes(widget.verse.id, _strokes);
-        kUndo.recordAdd(widget.verse.id, _active!);
+        DrawingStore.setStrokes(widget.pageId, _strokes);
+        kUndo.recordAdd(widget.pageId, _active!);
       }
       _active = null;
       _repaint.value++;
     }
     if (_erasedThisGesture.isNotEmpty) {
-      kUndo.recordErase(widget.verse.id, List<Stroke>.of(_erasedThisGesture));
+      kUndo.recordErase(widget.pageId, List<Stroke>.of(_erasedThisGesture));
       _erasedThisGesture.clear();
     }
   }
@@ -1253,7 +1329,7 @@ class _VerseBlockState extends State<VerseBlock> {
     if (removed.isEmpty) return;
     _erasedThisGesture.addAll(removed);
     _strokes.removeWhere((s) => removed.contains(s));
-    DrawingStore.setStrokes(widget.verse.id, _strokes);
+    DrawingStore.setStrokes(widget.pageId, _strokes);
     _repaint.value++;
   }
 
@@ -1264,48 +1340,23 @@ class _VerseBlockState extends State<VerseBlock> {
       onPointerMove: _onMove,
       onPointerUp: _onUp,
       behavior: HitTestBehavior.translucent,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: kVerseSpacing),
-        child: Stack(
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (widget.showNumber)
-                  SizedBox(
-                    width: kGutterWidth,
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 6, right: 8),
-                      child: Text(
-                        '${widget.verse.number}',
-                        textAlign: TextAlign.right,
-                        style: kVerseNumberStyle,
-                      ),
-                    ),
-                  ),
-                // Fixed-width text column; the blank space after it is margin you
-                // can write in (the ink canvas below spans the whole block).
-                SizedBox(
-                  width: widget.textWidth,
-                  child: Text(widget.verse.text, style: widget.verseStyle),
-                ),
-                const Spacer(),
-              ],
-            ),
-            Positioned.fill(
-              child: RepaintBoundary(
-                child: CustomPaint(
-                  painter: StrokePainter(
-                    committed: _strokes,
-                    active: () => _active,
-                    repaint: _repaint,
-                    onPaintSize: (s) => _canvasSize = s,
-                  ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          widget.child,
+          Positioned.fill(
+            child: RepaintBoundary(
+              child: CustomPaint(
+                painter: StrokePainter(
+                  committed: _strokes,
+                  active: () => _active,
+                  repaint: _repaint,
+                  onPaintSize: (s) => _canvasSize = s,
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -1569,6 +1620,15 @@ class _NoteEntry {
   _NoteEntry(this.ref, this.count);
 }
 
+
+BibleRef? _parsePageInkId(String id) {
+  final parts = id.split('|');
+  if (parts.length < 5 || parts.first != 'page') return null;
+  final chapter = int.tryParse(parts[3]);
+  if (chapter == null) return null;
+  return BibleRef(parts[2], chapter);
+}
+
 class NotesBrowserScreen extends StatefulWidget {
   const NotesBrowserScreen({super.key});
 
@@ -1595,10 +1655,16 @@ class _NotesBrowserScreenState extends State<NotesBrowserScreen> {
     final entries = <_NoteEntry>[];
     for (final id in DrawingStore.annotatedVerseIds()) {
       final parsed = parseVerseId(id);
-      if (parsed == null) continue;
-      final (book, chapter, verse) = parsed;
-      entries.add(_NoteEntry(BibleRef(book, chapter, verse),
-          DrawingStore.strokeCount(id)));
+      if (parsed != null) {
+        final (book, chapter, verse) = parsed;
+        entries.add(_NoteEntry(BibleRef(book, chapter, verse),
+            DrawingStore.strokeCount(id)));
+        continue;
+      }
+      final pageRef = _parsePageInkId(id);
+      if (pageRef != null) {
+        entries.add(_NoteEntry(pageRef, DrawingStore.strokeCount(id)));
+      }
     }
     entries.sort((a, b) {
       final o = order(a.ref.book).compareTo(order(b.ref.book));
@@ -1656,7 +1722,9 @@ class _NotesBrowserScreenState extends State<NotesBrowserScreen> {
                           children: [
                             Expanded(
                               child: Text(
-                                '${e.ref.book} ${e.ref.chapter}:${e.ref.verse}',
+                                e.ref.verse == null
+                                    ? '${e.ref.book} ${e.ref.chapter}'
+                                    : '${e.ref.book} ${e.ref.chapter}:${e.ref.verse}',
                                 style: kTitleStyle(18, weight: FontWeight.w700),
                               ),
                             ),
