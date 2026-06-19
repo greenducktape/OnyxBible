@@ -82,6 +82,30 @@ class ReadingPlan {
   int get length => days.length;
 }
 
+/// A live "reading the plan" session held by the reader: which day, and how far
+/// through that day's passages. Lets the reader follow the plan's order
+/// (Genesis 1 → Matthew 1 → next day) instead of the next Bible chapter, and
+/// auto-complete a day when its last passage is finished.
+class PlanSession {
+  final ReadingPlan plan;
+  final int dayIndex;
+  final int cursor; // index into the day's passages
+
+  const PlanSession(this.plan, this.dayIndex, [this.cursor = 0]);
+
+  List<BibleRef> get dayPassages => plan.days[dayIndex].passages;
+  BibleRef get current => dayPassages[cursor];
+  bool get atDayEnd => cursor >= dayPassages.length - 1;
+  bool get atDayStart => cursor <= 0;
+  bool get isLastDay => dayIndex >= plan.length - 1;
+  int get passageCount => dayPassages.length;
+
+  PlanSession withCursor(int c) => PlanSession(plan, dayIndex, c);
+  PlanSession nextDay() => PlanSession(plan, dayIndex + 1, 0);
+  PlanSession prevDay() =>
+      PlanSession(plan, dayIndex - 1, plan.days[dayIndex - 1].passages.length - 1);
+}
+
 /// Every chapter of one testament, in canonical order.
 List<BibleRef> chaptersOfTestament({required bool oldTestament}) {
   final out = <BibleRef>[];
@@ -241,31 +265,19 @@ const int wholeBibleChapters = 1189;
 const List<PlanInfo> kPlans = [
   PlanInfo(
     id: 'wholeBible',
-    title: 'Whole Bible Cross-Reference',
-    subtitle: 'All 1,189 chapters, Old & New Testament interleaved by cross-reference',
+    title: 'Whole Bible · cross-referenced',
+    subtitle: 'Every chapter — Old & New Testament paired by cross-reference',
     maxDays: wholeBibleChapters,
     defaultDays: 365,
-    presets: [260, 365, 730, 1095, wholeBibleChapters],
+    presets: [365, 730, 1000],
     build: _buildWholeBible,
-  ),
-  PlanInfo(
-    id: 'companion',
-    title: 'New Testament Companion',
-    subtitle: '260 New Testament chapters paired with Old Testament roots',
-    maxDays: companionMaxDays,
-    defaultDays: companionMaxDays,
-    presets: [90, 130, 180, companionMaxDays],
-    build: _buildCompanion,
   ),
 ];
 
-ReadingPlan _buildCompanion(XrefGraph g, int days) =>
-    companionPlan(g, days: days);
-
 ReadingPlan _buildWholeBible(XrefGraph g, int days) => wholeBiblePlan(g,
     id: 'wholeBible',
-    title: 'Whole Bible Cross-Reference',
-    subtitle: 'All 1,189 chapters, Old & New Testament interleaved by cross-reference',
+    title: 'Whole Bible',
+    subtitle: 'Old & New Testament interleaved by cross-reference',
     totalDays: days.clamp(1, wholeBibleChapters).toInt());
 
 PlanInfo planInfoById(String id) =>
