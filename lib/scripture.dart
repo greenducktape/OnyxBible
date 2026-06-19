@@ -12,6 +12,18 @@ import 'verse.dart';
 /// regardless of which translation/source produced the verse.
 String verseId(String book, int chapter, int verse) => '${book}_${chapter}_$verse';
 
+/// Inverse of [verseId]: splits "Book_Chapter_Verse" back into its parts.
+/// Book names carry spaces (never underscores), so the last two underscore
+/// segments are always chapter and verse. Returns null if malformed.
+(String book, int chapter, int verse)? parseVerseId(String id) {
+  final parts = id.split('_');
+  if (parts.length < 3) return null;
+  final verse = int.tryParse(parts.removeLast());
+  final chapter = int.tryParse(parts.removeLast());
+  if (verse == null || chapter == null || parts.isEmpty) return null;
+  return (parts.join('_'), chapter, verse);
+}
+
 /// Metadata for a translation the app can show. Adding a new bundled language
 /// (e.g. Spanish RV1909, German Luther1912) is just: drop its per-book JSON
 /// under `assets/bibles/<id>/` and add an entry here.

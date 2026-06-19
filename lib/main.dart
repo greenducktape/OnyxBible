@@ -199,6 +199,13 @@ class DrawingStore {
   static List<Stroke> strokesFor(String verseId) =>
       List<Stroke>.of(_notes[verseId] ?? const []);
 
+  /// Verse ids that currently hold at least one stroke. Used by the notes
+  /// browser; order is unspecified (the browser sorts canonically).
+  static Iterable<String> annotatedVerseIds() => _notes.keys;
+
+  /// Number of strokes saved on a verse (0 if none).
+  static int strokeCount(String verseId) => _notes[verseId]?.length ?? 0;
+
   static void setStrokes(String verseId, List<Stroke> strokes) {
     if (strokes.isEmpty) {
       _notes.remove(verseId);
@@ -630,13 +637,15 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   Future<void> _openPicker() async {
-    final result = await Navigator.of(context).push<(String, int)>(
+    final ref = await Navigator.of(context).push<BibleRef>(
       MaterialPageRoute(
         builder: (_) =>
             BookPickerScreen(currentBook: _book, currentChapter: _chapter),
       ),
     );
-    if (result != null) _goToChapter(result.$1, result.$2);
+    if (ref == null) return;
+    if (ref.verse != null) _targetVerse = ref.verse; // jump to an annotated verse
+    _goToChapter(ref.book, ref.chapter);
   }
 
   Future<void> _openSearch() async {
@@ -1328,9 +1337,11 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
   Widget _buildBookList() {
     final ot = kBibleBooks.where((b) => b.isOldTestament).toList();
     final nt = kBibleBooks.where((b) => !b.isOldTestament).toList();
+    final noteCount = DrawingStore.annotatedVerseIds().length;
     return ListView(
       padding: const EdgeInsets.only(bottom: 24),
       children: [
+        if (noteCount > 0) _notesEntry(noteCount),
         _sectionHeader('Old Testament'),
         ...ot.map(_bookTile),
         _sectionHeader('New Testament'),
@@ -1338,6 +1349,31 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
       ],
     );
   }
+
+  Widget _notesEntry(int count) => InkWell(
+        onTap: () async {
+          final ref = await Navigator.of(context).push<BibleRef>(
+            MaterialPageRoute(builder: (_) => const NotesBrowserScreen()),
+          );
+          if (ref != null && context.mounted) Navigator.of(context).pop(ref);
+        },
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+          child: Row(
+            children: [
+              const Icon(Icons.gesture, size: 22, color: kInk),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text('My notes',
+                    style: kTitleStyle(19, weight: FontWeight.w600)),
+              ),
+              Text('$count ${count == 1 ? 'verse' : 'verses'}',
+                  style: GoogleFonts.crimsonPro(color: kMuted, fontSize: 14)),
+              const Icon(Icons.chevron_right, size: 20, color: kMuted),
+            ],
+          ),
+        ),
+      );
 
   Widget _sectionHeader(String label) => Padding(
         padding: const EdgeInsets.fromLTRB(24, 22, 24, 8),
@@ -1397,7 +1433,7 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
         final isCurrent =
             book.name == widget.currentBook && n == widget.currentChapter;
         return InkWell(
-          onTap: () => Navigator.of(context).pop((book.name, n)),
+          onTap: () => Navigator.of(context).pop(BibleRef(book.name, n)),
           borderRadius: BorderRadius.circular(8),
           child: Container(
             decoration: BoxDecoration(
@@ -1417,6 +1453,137 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+// --- Notes browser -------------------------------------------------------
+//
+// Lists every verse that holds handwritten ink, in canonical order, so the
+// reader can jump straight to anything they've annotated. Selecting a row pops
+// a BibleRef (book, chapter, verse) the reader navigates to.
+
+class _NoteEntry {
+  final BibleRef ref;
+  final int count;
+  String? preview; // verse text, loaded lazily for context
+  _NoteEntry(this.ref, this.count);
+}
+
+class NotesBrowserScreen extends StatefulWidget {
+  const NotesBrowserScreen({super.key});
+
+  @override
+  State<NotesBrowserScreen> createState() => _NotesBrowserScreenState();
+}
+
+class _NotesBrowserScreenState extends State<NotesBrowserScreen> {
+  late final List<_NoteEntry> _entries;
+
+  @override
+  void initState() {
+    super.initState();
+    _entries = _buildEntries();
+    _loadPreviews();
+  }
+
+  List<_NoteEntry> _buildEntries() {
+    int order(String book) {
+      final i = kBibleBooks.indexWhere((b) => b.name == book);
+      return i < 0 ? 1 << 20 : i;
+    }
+
+    final entries = <_NoteEntry>[];
+    for (final id in DrawingStore.annotatedVerseIds()) {
+      final parsed = parseVerseId(id);
+      if (parsed == null) continue;
+      final (book, chapter, verse) = parsed;
+      entries.add(_NoteEntry(BibleRef(book, chapter, verse),
+          DrawingStore.strokeCount(id)));
+    }
+    entries.sort((a, b) {
+      final o = order(a.ref.book).compareTo(order(b.ref.book));
+      if (o != 0) return o;
+      final c = a.ref.chapter.compareTo(b.ref.chapter);
+      if (c != 0) return c;
+      return (a.ref.verse ?? 0).compareTo(b.ref.verse ?? 0);
+    });
+    return entries;
+  }
+
+  // Preview text is read from the default bundled translation (notes share one
+  // versification across translations, so the reference resolves either way).
+  Future<void> _loadPreviews() async {
+    final src = BundledScriptureSource(kDefaultTranslation);
+    for (final e in _entries) {
+      try {
+        final verses = await src.chapter(e.ref.book, e.ref.chapter);
+        final match = verses.where((v) => v.number == e.ref.verse);
+        if (match.isNotEmpty) e.preview = match.first.text;
+      } catch (_) {
+        // Leave preview null; the reference alone is still actionable.
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kPaper,
+      appBar: AppBar(title: Text('My notes', style: kTitleStyle(20))),
+      body: _entries.isEmpty
+          ? Center(
+              child: Text('No notes yet.',
+                  style: kTitleStyle(18, weight: FontWeight.w500)
+                      .copyWith(color: kMuted)),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              itemCount: _entries.length,
+              itemBuilder: (context, i) {
+                final e = _entries[i];
+                final marks =
+                    '${e.count} ${e.count == 1 ? 'mark' : 'marks'}';
+                return InkWell(
+                  onTap: () => Navigator.of(context).pop(e.ref),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '${e.ref.book} ${e.ref.chapter}:${e.ref.verse}',
+                                style: kTitleStyle(18, weight: FontWeight.w700),
+                              ),
+                            ),
+                            const Icon(Icons.gesture, size: 16, color: kMuted),
+                            const SizedBox(width: 5),
+                            Text(marks,
+                                style: GoogleFonts.crimsonPro(
+                                    color: kMuted, fontSize: 13)),
+                          ],
+                        ),
+                        if (e.preview != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            e.preview!,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.crimsonPro(
+                                fontSize: 16, height: 1.4, color: kMuted),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
     );
   }
 }

@@ -10,6 +10,15 @@ void main() {
     expect(verseId('1 Samuel', 1, 1), '1 Samuel_1_1');
   });
 
+  test('parseVerseId inverts verseId, including multi-word books', () {
+    expect(parseVerseId(verseId('John', 3, 16)), ('John', 3, 16));
+    expect(parseVerseId(verseId('1 Samuel', 1, 1)), ('1 Samuel', 1, 1));
+    expect(parseVerseId(verseId('Song of Solomon', 2, 4)),
+        ('Song of Solomon', 2, 4));
+    expect(parseVerseId('not-a-verse-id'), isNull);
+    expect(parseVerseId('John_3'), isNull);
+  });
+
   test('KJV is registered as a bundled translation', () {
     final kjv = translationById('kjv');
     expect(kjv.bundled, isTrue);
