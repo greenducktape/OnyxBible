@@ -4,12 +4,17 @@ import 'package:boox_bible/settings_store.dart';
 void main() {
   test('Settings round-trips through JSON', () {
     const s = Settings(
-        lastBook: 'Romans', lastChapter: 8, widthIndex: 2, translation: 'kjv');
+        lastBook: 'Romans',
+        lastChapter: 8,
+        widthIndex: 2,
+        translation: 'kjv',
+        textScaleIndex: 3);
     final r = Settings.fromJson(s.toJson());
     expect(r.lastBook, 'Romans');
     expect(r.lastChapter, 8);
     expect(r.widthIndex, 2);
     expect(r.translation, 'kjv');
+    expect(r.textScaleIndex, 3);
   });
 
   test('Settings.fromJson fills sensible defaults', () {
@@ -18,6 +23,7 @@ void main() {
     expect(d.lastChapter, 1);
     expect(d.widthIndex, 1);
     expect(d.translation, 'kjv');
+    expect(d.textScaleIndex, 1);
   });
 
   test('copyWith changes only the given fields', () {
@@ -27,5 +33,6 @@ void main() {
     expect(c.lastChapter, 2);
     expect(c.widthIndex, s.widthIndex);
     expect(c.translation, s.translation);
+    expect(c.textScaleIndex, s.textScaleIndex);
   });
 }

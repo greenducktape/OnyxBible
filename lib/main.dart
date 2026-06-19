@@ -51,11 +51,20 @@ const EdgeInsets kPageVPadding = EdgeInsets.symmetric(vertical: 16);
 
 // --- Shared typography ----------------------------------------------------
 //
-// Built once, not per build/paint. Pagination MUST measure with the same body
-// style the verse renders, otherwise pages overflow or leave gaps.
+// The verse body style is size-adjustable. It MUST be built with the active
+// size both where pagination measures and where the verse renders, otherwise
+// pages overflow or leave gaps. Reader screen builds it once per frame and
+// threads it through, so it isn't reconstructed per verse.
 
-final TextStyle kVerseStyle =
-    GoogleFonts.crimsonPro(fontSize: 22, height: 1.55, color: kInk);
+// Reading text sizes the user can step through. Index 1 (22pt) is the default
+// and matches the app's original fixed size.
+const List<double> kTextSizes = [18, 22, 26, 31, 37];
+
+TextStyle verseStyleOf(double fontSize) =>
+    GoogleFonts.crimsonPro(fontSize: fontSize, height: 1.55, color: kInk);
+
+/// Default verse style (22pt). Kept for code/tests that don't vary the size.
+final TextStyle kVerseStyle = verseStyleOf(22);
 final TextStyle kVerseNumberStyle = GoogleFonts.crimsonPro(
   fontSize: 13,
   height: 1.2,
@@ -412,6 +421,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   double get _penWidth => _widths[_widthIndex];
   bool get _isEraser => _tool == PenTool.eraser;
 
+  // Reading text size (index into kTextSizes).
+  int _textScaleIndex = 1;
+  double get _fontSize => kTextSizes[_textScaleIndex];
+
   // Paging.
   final PageController _pageController = PageController();
   int _page = 0;
@@ -432,6 +445,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     _book = s.lastBook;
     _chapter = s.lastChapter;
     _widthIndex = s.widthIndex.clamp(0, _widths.length - 1).toInt();
+    _textScaleIndex = s.textScaleIndex.clamp(0, kTextSizes.length - 1).toInt();
     _source = sourceFor(translationById(s.translation));
     _loadChapter();
   }
@@ -448,6 +462,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       lastChapter: _chapter,
       widthIndex: _widthIndex,
       translation: _source.translationId,
+      textScaleIndex: _textScaleIndex,
     ));
   }
 
@@ -494,6 +509,88 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   void _forceRefresh() => setState(() => _refreshTick++);
+
+  void _setTextScale(int index) {
+    final next = index.clamp(0, kTextSizes.length - 1);
+    if (next == _textScaleIndex) return;
+    setState(() {
+      _textScaleIndex = next;
+      // The page count changes with the size; rebuild from page 0 so we never
+      // land past the (now shorter/longer) end of the chapter.
+      _page = 0;
+    });
+    _persist();
+    _resetToFirstPage();
+    _forceRefresh(); // clear ghosting from the reflow
+  }
+
+  Future<void> _openTextSizeSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kPaper,
+      showDragHandle: false,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void change(int delta) {
+            _setTextScale(_textScaleIndex + delta);
+            setSheet(() {}); // refresh the sheet's own preview
+          }
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('TEXT SIZE',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 12,
+                          letterSpacing: 3,
+                          fontWeight: FontWeight.w600,
+                          color: kMuted)),
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      _SizeStepButton(
+                        label: 'A',
+                        small: true,
+                        onPressed:
+                            _textScaleIndex > 0 ? () => change(-1) : null,
+                      ),
+                      Expanded(
+                        child: Center(
+                          child: Text('Aa',
+                              style: verseStyleOf(_fontSize)
+                                  .copyWith(fontWeight: FontWeight.w600)),
+                        ),
+                      ),
+                      _SizeStepButton(
+                        label: 'A',
+                        small: false,
+                        onPressed: _textScaleIndex < kTextSizes.length - 1
+                            ? () => change(1)
+                            : null,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Center(
+                    child: Text('${_textScaleIndex + 1} of ${kTextSizes.length}',
+                        style: GoogleFonts.crimsonPro(
+                            fontSize: 14, color: kMuted)),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 
   // --- Navigation ---------------------------------------------------------
 
@@ -558,12 +655,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   // [textWidth] is the width available to the verse *text* (content minus the
   // number gutter). The first page reserves space for the chapter header.
 
-  List<List<Verse>> _paginate(
-      List<Verse> verses, double textWidth, double availableHeight) {
+  List<List<Verse>> _paginate(List<Verse> verses, TextStyle verseStyle,
+      double textWidth, double availableHeight) {
     if (verses.isEmpty) return const [];
 
     final key = '${_source.translationId}_${_book}_${_chapter}_'
-        '${textWidth.round()}x${availableHeight.round()}';
+        '${_textScaleIndex}_${textWidth.round()}x${availableHeight.round()}';
     final cached = PageCache.get(key);
     if (cached != null) return cached;
 
@@ -573,7 +670,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
 
     final painter = TextPainter(textDirection: TextDirection.ltr);
     for (final v in verses) {
-      painter.text = TextSpan(text: v.text, style: kVerseStyle);
+      painter.text = TextSpan(text: v.text, style: verseStyle);
       painter.layout(maxWidth: textWidth);
       final vh = painter.height + kVerseSpacing;
 
@@ -657,6 +754,11 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
           onPressed: _openSearch,
         ),
         IconButton(
+          tooltip: 'Text size',
+          icon: const Icon(Icons.format_size, color: kInk),
+          onPressed: _openTextSizeSheet,
+        ),
+        IconButton(
           tooltip: 'Stroke width',
           icon: _WidthGlyph(width: _penWidth, active: !_isEraser),
           onPressed: () {
@@ -726,8 +828,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             math.min(constraints.maxWidth - kHPadding * 2, kMaxContentWidth);
         final textWidth = contentWidth - kGutterWidth;
         final availableHeight = constraints.maxHeight - kPageVPadding.vertical;
+        final verseStyle = verseStyleOf(_fontSize);
 
-        final pages = _paginate(_verses, textWidth, availableHeight);
+        final pages =
+            _paginate(_verses, verseStyle, textWidth, availableHeight);
         if (pages.length != _pageCount) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) setState(() => _pageCount = pages.length);
@@ -778,6 +882,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
                         VerseBlock(
                           key: ValueKey(v.id),
                           verse: v,
+                          verseStyle: verseStyle,
                           penWidth: _penWidth,
                           isEraser: _isEraser,
                         ),
@@ -855,6 +960,40 @@ class _NavButton extends StatelessWidget {
   }
 }
 
+/// A− / A+ stepper button used in the text-size sheet. [small] renders the
+/// "decrease" affordance at a smaller glyph than the "increase" one.
+class _SizeStepButton extends StatelessWidget {
+  final String label;
+  final bool small;
+  final VoidCallback? onPressed;
+  const _SizeStepButton(
+      {required this.label, required this.small, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onPressed != null;
+    return InkWell(
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 64,
+        height: 56,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          border: Border.all(color: enabled ? kInk : kDisabled),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(label,
+            style: GoogleFonts.crimsonPro(
+              fontSize: small ? 18 : 30,
+              fontWeight: FontWeight.w600,
+              color: enabled ? kInk : kDisabled,
+            )),
+      ),
+    );
+  }
+}
+
 /// Small bar that visualises the current stroke width in the app bar.
 class _WidthGlyph extends StatelessWidget {
   final double width;
@@ -920,12 +1059,14 @@ class ChapterHeader extends StatelessWidget {
 
 class VerseBlock extends StatefulWidget {
   final Verse verse;
+  final TextStyle verseStyle;
   final double penWidth;
   final bool isEraser;
 
   const VerseBlock({
     super.key,
     required this.verse,
+    required this.verseStyle,
     required this.penWidth,
     required this.isEraser,
   });
@@ -1060,7 +1201,7 @@ class _VerseBlockState extends State<VerseBlock> {
                     ),
                   ),
                 ),
-                Expanded(child: Text(widget.verse.text, style: kVerseStyle)),
+                Expanded(child: Text(widget.verse.text, style: widget.verseStyle)),
               ],
             ),
             Positioned.fill(
