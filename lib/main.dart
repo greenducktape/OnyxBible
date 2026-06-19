@@ -514,8 +514,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   bool _isLoading = true;
   bool _hasError = false;
 
-  // Drawing tools.
-  static const List<double> _widths = [2.0, 3.5, 6.0];
+  // Drawing tools. A wider range of nib sizes; default to a fine line.
+  static const List<double> _widths = [1.0, 1.5, 2.0, 3.0, 4.5, 6.0];
   int _widthIndex = 1;
   PenTool _tool = PenTool.pen;
 
@@ -912,7 +912,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
                 // A 1ms flip of refreshDelay triggers a native full e-ink
                 // refresh that clears pen ghosting after page/chapter changes.
                 refreshDelay: Duration(milliseconds: 1200 + (_refreshTick % 2)),
-                strokeStyle: OnyxStrokeStyle.fountainPen,
+                // Uniform-width pen: its native preview matches the uniform
+                // Flutter render, so ink doesn't fatten after the refresh
+                // (the tapered fountain pen mismatched the committed stroke).
+                strokeStyle: OnyxStrokeStyle.pen,
                 strokeColor: _isEraser ? Colors.white : Colors.black,
                 strokeWidth: _penWidth,
                 child: _buildBody(),
