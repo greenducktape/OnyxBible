@@ -5,6 +5,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 
 import 'books.dart';
+import 'reading_plan.dart';
 import 'verse.dart';
 
 /// The single, canonical verse-id constructor. Kept identical across every
@@ -148,6 +149,12 @@ class ApiScriptureSource implements ScriptureSource {
 
 ScriptureSource sourceFor(TranslationInfo t) =>
     t.bundled ? BundledScriptureSource(t.id) : ApiScriptureSource(t.id);
+
+/// Loads the bundled chapter cross-reference graph used by reading plans.
+Future<XrefGraph> loadXrefGraph() async {
+  final raw = await rootBundle.loadString('assets/data/xref_chapters.json');
+  return XrefGraph.fromJson(json.decode(raw) as Map<String, dynamic>);
+}
 
 class SearchHit {
   final String book;
