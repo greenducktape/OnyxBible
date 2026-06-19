@@ -1355,7 +1355,7 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
           final ref = await Navigator.of(context).push<BibleRef>(
             MaterialPageRoute(builder: (_) => const NotesBrowserScreen()),
           );
-          if (ref != null && context.mounted) Navigator.of(context).pop(ref);
+          if (ref != null && mounted) Navigator.of(context).pop(ref);
         },
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
