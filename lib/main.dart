@@ -1232,7 +1232,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
         if (_showNibs) setState(() => _showNibs = false);
         // Stylus events are for drawing; only finger taps navigate.
         if (e.kind == PointerDeviceKind.stylus ||
-            e.kind == PointerDeviceKind.invertedStylus) return;
+            e.kind == PointerDeviceKind.invertedStylus) {
+          return;
+        }
         final w = context.size?.width ?? 0;
         if (e.localPosition.dx < w * 0.25) {
           _prevPage();
