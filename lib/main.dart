@@ -151,12 +151,18 @@ class Stroke {
   final double captureW;
   final double captureH;
 
+  // Pen recipe id (see kPenPresets / penRecipeFor). Drives how the committed
+  // stroke is rendered — pressure→width range, caps, alpha — so a stroke keeps
+  // the look of the pen it was drawn with. Legacy strokes read as 'ballpoint'.
+  final String style;
+
   Stroke({
     required this.points,
     this.width = 2.5,
     this.color = Colors.black,
     this.captureW = 0,
     this.captureH = 0,
+    this.style = 'ballpoint',
   });
 
   Map<String, dynamic> toJson() => {
@@ -165,6 +171,7 @@ class Stroke {
         'color': color.toARGB32(),
         if (captureW > 0) 'cw': captureW,
         if (captureH > 0) 'ch': captureH,
+        if (style != 'ballpoint') 'st': style,
       };
 
   factory Stroke.fromJson(Map<String, dynamic> json) {
@@ -177,6 +184,7 @@ class Stroke {
       color: Color(json['color'] as int? ?? Colors.black.toARGB32()),
       captureW: (json['cw'] as num?)?.toDouble() ?? 0,
       captureH: (json['ch'] as num?)?.toDouble() ?? 0,
+      style: json['st'] as String? ?? 'ballpoint',
     );
   }
 
@@ -549,6 +557,89 @@ const List<PenPreset> kPenPresets = [
   ),
 ];
 
+/// How a pen renders its committed ink. Width is the nib size modulated by
+/// stylus pressure between [lo] (light touch) and [hi] (hard press), giving the
+/// Boox-notetaker "weight" feel — press harder for a thicker line. Anti-aliasing
+/// is always off when painting (see _paintStroke) so a line keeps the same
+/// thickness through the e-ink GC refresh instead of "fattening" a second later.
+class PenRecipe {
+  final double lo; // width multiplier at zero pressure
+  final double hi; // width multiplier at full pressure
+  final bool taperEnds; // ramp width down over the first/last few points
+  final StrokeCap cap;
+  final double opacity; // applied to the stroke colour (marker = translucent)
+
+  const PenRecipe({
+    this.lo = 0.85,
+    this.hi = 1.1,
+    this.taperEnds = false,
+    this.cap = StrokeCap.round,
+    this.opacity = 1.0,
+  });
+}
+
+const Map<String, PenRecipe> _kPenRecipes = {
+  // Near-uniform — a dependable everyday line.
+  'ballpoint': PenRecipe(lo: 0.85, hi: 1.1),
+  // Strong pressure response + end taper, like a real nib.
+  'fountain': PenRecipe(lo: 0.4, hi: 1.25, taperEnds: true),
+  // Widest dynamic range.
+  'brush': PenRecipe(lo: 0.3, hi: 1.6, taperEnds: true),
+  // Thin and a touch lighter.
+  'pencil': PenRecipe(lo: 0.7, hi: 1.0, opacity: 0.9),
+  // Highlighter: flat, wide, translucent; pressure-independent.
+  'marker': PenRecipe(lo: 1.0, hi: 1.0, cap: StrokeCap.butt, opacity: 0.32),
+};
+
+PenRecipe penRecipeFor(String id) =>
+    _kPenRecipes[id] ?? _kPenRecipes['ballpoint']!;
+
+/// Paints one stroke with its pen recipe. Anti-aliasing is OFF so the line looks
+/// identical under an e-ink partial update and after the full GC refresh (no
+/// post-commit "fattening"). Width follows captured pressure for a weight feel.
+void _paintStroke(Canvas canvas, Stroke stroke, Size size) {
+  final pts = stroke.points;
+  if (pts.isEmpty) return;
+
+  // Map capture-time coordinates onto the current canvas (1:1 for unchanged
+  // layouts and legacy strokes).
+  final (sx, sy) = stroke.scaleTo(size);
+  Offset at(StrokePoint p) => Offset(p.x * sx, p.y * sy);
+
+  final recipe = penRecipeFor(stroke.style);
+  final base = stroke.width;
+  final color = recipe.opacity >= 1.0
+      ? stroke.color
+      : stroke.color.withValues(alpha: recipe.opacity);
+
+  final paint = Paint()
+    ..color = color
+    ..isAntiAlias = false
+    ..strokeCap = recipe.cap
+    ..strokeJoin = StrokeJoin.round
+    ..style = PaintingStyle.stroke;
+
+  double widthAt(int i) {
+    final p = pts[i].pressure.clamp(0.0, 1.0);
+    var w = base * (recipe.lo + (recipe.hi - recipe.lo) * p);
+    if (recipe.taperEnds) {
+      final edge = math.min(i, pts.length - 1 - i);
+      if (edge < 3) w *= 0.55 + 0.15 * edge; // soften the first/last few points
+    }
+    return w;
+  }
+
+  if (pts.length == 1) {
+    paint.strokeWidth = widthAt(0);
+    canvas.drawPoints(PointMode.points, [at(pts.first)], paint);
+    return;
+  }
+  for (var i = 0; i < pts.length - 1; i++) {
+    paint.strokeWidth = (widthAt(i) + widthAt(i + 1)) / 2;
+    canvas.drawLine(at(pts[i]), at(pts[i + 1]), paint);
+  }
+}
+
 class BibleReaderScreen extends StatefulWidget {
   const BibleReaderScreen({super.key});
 
@@ -794,91 +885,6 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     _goToChapter(ref.book, ref.chapter);
   }
 
-  // Boox-style pen picker: a row of pen-type chips with numeric thickness
-  // labels above (the standard Boox toolbar shows 1.15/0.60/0.35/0.40 above each
-  // pen icon). Live-updates the reader so the next stroke uses the new preset.
-  Future<void> _openPenSheet() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: kPaper,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
-      ),
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) {
-          void pickPen(int i) {
-            setState(() => _presetIndex = i);
-            setSheet(() {});
-          }
-
-          void pickWidth(int i) {
-            setState(() => _widthIndex = i);
-            _persist();
-            setSheet(() {});
-          }
-
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 22),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('PEN',
-                      style: GoogleFonts.crimsonPro(
-                          fontSize: 12,
-                          letterSpacing: 3,
-                          fontWeight: FontWeight.w600,
-                          color: kMuted)),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      for (var i = 0; i < kPenPresets.length; i++) ...[
-                        Expanded(
-                          child: _PenPresetButton(
-                            preset: kPenPresets[i],
-                            // Numeric thickness label, Boox-bar style.
-                            width: _widths[_widthIndex] *
-                                kPenPresets[i].widthScale,
-                            selected: _presetIndex == i,
-                            onTap: () => pickPen(i),
-                          ),
-                        ),
-                        if (i < kPenPresets.length - 1)
-                          const SizedBox(width: 4),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 22),
-                  Text('THICKNESS',
-                      style: GoogleFonts.crimsonPro(
-                          fontSize: 12,
-                          letterSpacing: 3,
-                          fontWeight: FontWeight.w600,
-                          color: kMuted)),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: [
-                      for (var i = 0; i < _widths.length; i++)
-                        _ThicknessChip(
-                          label: _widths[i].toStringAsFixed(1),
-                          width: _widths[i],
-                          selected: _widthIndex == i,
-                          onTap: () => pickWidth(i),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   Future<void> _openMenu() async {
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -1047,6 +1053,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
         child: Column(
           children: [
             _buildTopBar(),
+            _buildPenRail(),
             if (_session != null) _buildPlanBanner(_session!),
             // The pen-capture area is ONLY the page, so native ink can't land
             // on the toolbar or the bottom navigation.
@@ -1124,35 +1131,113 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             ),
           ),
           IconButton(
-            tooltip: '${_preset.label} · ${_widths[_widthIndex].toStringAsFixed(1)}',
-            icon: _PenGlyph(
-                icon: _preset.icon,
-                width: _penWidth.clamp(2.0, 8.0),
-                active: !_isEraser),
-            onPressed: _openPenSheet,
-          ),
-          IconButton(
-            tooltip: _isEraser ? 'Eraser — tap for pen' : 'Pen — tap for eraser',
-            icon: _isEraser
-                ? Container(
-                    padding: const EdgeInsets.all(3),
-                    decoration: BoxDecoration(
-                      color: kInk,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: const Icon(Icons.cleaning_services,
-                        size: 18, color: kPaper),
-                  )
-                : const Icon(Icons.edit, color: kInk),
-            onPressed: () => setState(
-                () => _tool = _isEraser ? PenTool.pen : PenTool.eraser),
-          ),
-          IconButton(
             tooltip: 'Refresh screen',
             icon: const Icon(Icons.autorenew, color: kInk),
             onPressed: _forceRefresh,
           ),
         ],
+      ),
+    );
+  }
+
+  // A flat writing rail: every pen is one tap away (no nested menu), with the
+  // eraser and a row of nib sizes beside it. Selection is shown by a thin ink
+  // underline rather than chips/elevation — closer to a notetaker's tool strip
+  // than an app toolbar.
+  Widget _buildPenRail() {
+    return Container(
+      height: 46,
+      decoration: const BoxDecoration(
+        color: kPaper,
+        border: Border(bottom: BorderSide(color: kDisabled, width: 1)),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 4),
+          for (var i = 0; i < kPenPresets.length; i++)
+            _railTool(
+              icon: kPenPresets[i].icon,
+              tooltip: kPenPresets[i].label,
+              selected: !_isEraser && _presetIndex == i,
+              onTap: () => setState(() {
+                _presetIndex = i;
+                _tool = PenTool.pen;
+              }),
+            ),
+          _railTool(
+            icon: Icons.cleaning_services_outlined,
+            tooltip: 'Eraser',
+            selected: _isEraser,
+            onTap: () => setState(
+                () => _tool = _isEraser ? PenTool.pen : PenTool.eraser),
+          ),
+          const SizedBox(width: 6),
+          Container(width: 1, height: 24, color: kDisabled),
+          const SizedBox(width: 6),
+          for (var i = 0; i < _widths.length; i++) _railNib(i),
+          const Spacer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _railTool({
+    required IconData icon,
+    required String tooltip,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkResponse(
+        onTap: onTap,
+        radius: 26,
+        child: Container(
+          width: 46,
+          height: 46,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: selected ? kInk : Colors.transparent,
+                width: 2.5,
+              ),
+            ),
+          ),
+          child: Icon(icon, size: 23, color: selected ? kInk : kMuted),
+        ),
+      ),
+    );
+  }
+
+  // A dot whose size tracks the nib width; the selected one is filled.
+  Widget _railNib(int i) {
+    final selected = !_isEraser && _widthIndex == i;
+    final d = (5 + _widths[i] * 1.5).clamp(6.0, 17.0);
+    return Tooltip(
+      message: _widths[i].toStringAsFixed(1),
+      child: InkResponse(
+        onTap: () => setState(() {
+          _widthIndex = i;
+          _persist();
+        }),
+        radius: 22,
+        child: SizedBox(
+          width: 34,
+          height: 46,
+          child: Center(
+            child: Container(
+              width: d,
+              height: d,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: selected ? kInk : Colors.transparent,
+                border: Border.all(
+                    color: selected ? kInk : kMuted, width: 1.4),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1269,6 +1354,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
                     key: ValueKey(pageKey),
                     pageKey: pageKey,
                     penWidth: _penWidth,
+                    penStyle: _preset.id,
                     isEraser: _isEraser,
                   ),
                 ),
@@ -1346,134 +1432,6 @@ class _NavButton extends StatelessWidget {
 /// Small bar that visualises the current stroke width in the toolbar.
 /// Pen-type chip in the pen sheet. The numeric thickness sits ABOVE the glyph,
 /// matching the standard Boox notetaker bar in the reference image.
-class _PenPresetButton extends StatelessWidget {
-  final PenPreset preset;
-  final double width;
-  final bool selected;
-  final VoidCallback onTap;
-  const _PenPresetButton({
-    required this.preset,
-    required this.width,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
-        decoration: BoxDecoration(
-          border: Border.all(color: selected ? kInk : kDisabled),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Column(
-          children: [
-            Text(width.toStringAsFixed(2),
-                style: GoogleFonts.crimsonPro(
-                    fontSize: 11,
-                    color: kMuted,
-                    fontWeight: FontWeight.w600)),
-            const SizedBox(height: 2),
-            Icon(preset.icon, size: 26, color: kInk),
-            const SizedBox(height: 4),
-            Text(preset.label,
-                style: GoogleFonts.crimsonPro(
-                    fontSize: 12,
-                    color: selected ? kInk : kMuted,
-                    fontWeight:
-                        selected ? FontWeight.w700 : FontWeight.w500)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// A thickness pick: a numeric label and a centred bar at that exact width.
-class _ThicknessChip extends StatelessWidget {
-  final String label;
-  final double width;
-  final bool selected;
-  final VoidCallback onTap;
-  const _ThicknessChip({
-    required this.label,
-    required this.width,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        width: 56,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        decoration: BoxDecoration(
-          color: selected ? kInk : kPaper,
-          border: Border.all(color: kInk),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(label,
-                style: GoogleFonts.crimsonPro(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: selected ? kPaper : kInk)),
-            const SizedBox(height: 6),
-            Container(
-              width: 32,
-              height: width.clamp(1.0, 6.0),
-              decoration: BoxDecoration(
-                color: selected ? kPaper : kInk,
-                borderRadius: BorderRadius.circular(8),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Toolbar icon for the active pen: the preset's glyph above a thin width bar.
-/// Modelled on the Boox pen bar (small glyph, numeric width nearby).
-class _PenGlyph extends StatelessWidget {
-  final IconData icon;
-  final double width;
-  final bool active;
-  const _PenGlyph(
-      {required this.icon, required this.width, required this.active});
-
-  @override
-  Widget build(BuildContext context) {
-    final c = active ? kInk : kDisabled;
-    return SizedBox(
-      width: 26,
-      height: 26,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 16, color: c),
-          const SizedBox(height: 2),
-          Container(
-            width: 16,
-            height: width.clamp(1.0, 6.0),
-            decoration:
-                BoxDecoration(color: c, borderRadius: BorderRadius.circular(8)),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 /// Printed-book style chapter header shown at the top of the first page.
 class ChapterHeader extends StatelessWidget {
   final String book;
@@ -1559,12 +1517,14 @@ class VerseText extends StatelessWidget {
 class PageInk extends StatefulWidget {
   final String pageKey;
   final double penWidth;
+  final String penStyle; // active pen recipe id (kPenPresets)
   final bool isEraser;
 
   const PageInk({
     super.key,
     required this.pageKey,
     required this.penWidth,
+    required this.penStyle,
     required this.isEraser,
   });
 
@@ -1576,9 +1536,13 @@ class _PageInkState extends State<PageInk> {
   late List<Stroke> _strokes;
   Stroke? _active;
 
-  // Drives the CustomPaint directly: mutating points + bumping this repaints
-  // ONLY the canvas (no widget rebuild / text relayout) — smooth writing.
-  final ValueNotifier<int> _repaint = ValueNotifier<int>(0);
+  // Two repaint channels keep writing cheap. The committed layer repaints only
+  // when the saved strokes change (commit/erase/undo); the active layer repaints
+  // on every pointer move. So during a stroke we redraw ONLY the in-progress
+  // line — not every committed stroke on the page — which is what made long
+  // margin notes lag (the cost grew with how much was already on the page).
+  final ValueNotifier<int> _committedRepaint = ValueNotifier<int>(0);
+  final ValueNotifier<int> _activeRepaint = ValueNotifier<int>(0);
 
   static const double _eraseRadius = 18.0;
   Size? _canvasSize; // reported by the painter; used for capture box + eraser
@@ -1599,21 +1563,23 @@ class _PageInkState extends State<PageInk> {
       _strokes = DrawingStore.strokesFor(widget.pageKey);
       kUndo.register(widget.pageKey, _resyncFromStore);
       _active = null;
-      _repaint.value++;
+      _committedRepaint.value++;
+      _activeRepaint.value++;
     }
   }
 
   @override
   void dispose() {
     kUndo.unregister(widget.pageKey, _resyncFromStore);
-    _repaint.dispose();
+    _committedRepaint.dispose();
+    _activeRepaint.dispose();
     super.dispose();
   }
 
   void _resyncFromStore() {
     if (!mounted) return;
     _strokes = DrawingStore.strokesFor(widget.pageKey);
-    _repaint.value++;
+    _committedRepaint.value++;
   }
 
   bool _isStylus(PointerEvent e) =>
@@ -1636,10 +1602,11 @@ class _PageInkState extends State<PageInk> {
     _active = Stroke(
       points: [StrokePoint(e.localPosition.dx, e.localPosition.dy, e.pressure)],
       width: widget.penWidth,
+      style: widget.penStyle,
       captureW: _canvasSize?.width ?? 0,
       captureH: _canvasSize?.height ?? 0,
     );
-    _repaint.value++;
+    _activeRepaint.value++;
   }
 
   void _onMove(PointerMoveEvent e) {
@@ -1651,7 +1618,8 @@ class _PageInkState extends State<PageInk> {
     if (_active == null) return;
     _active!.points
         .add(StrokePoint(e.localPosition.dx, e.localPosition.dy, e.pressure));
-    _repaint.value++;
+    // Only the active layer repaints — committed strokes are untouched.
+    _activeRepaint.value++;
   }
 
   void _onUp(PointerUpEvent e) {
@@ -1662,7 +1630,9 @@ class _PageInkState extends State<PageInk> {
         kUndo.recordAdd(widget.pageKey, _active!);
       }
       _active = null;
-      _repaint.value++;
+      // The new stroke now lives in the committed layer; clear the active one.
+      _committedRepaint.value++;
+      _activeRepaint.value++;
     }
     if (_erasedThisGesture.isNotEmpty) {
       kUndo.recordErase(widget.pageKey, List<Stroke>.of(_erasedThisGesture));
@@ -1678,7 +1648,7 @@ class _PageInkState extends State<PageInk> {
     _erasedThisGesture.addAll(removed);
     _strokes.removeWhere((s) => removed.contains(s));
     DrawingStore.setStrokes(widget.pageKey, _strokes);
-    _repaint.value++;
+    _committedRepaint.value++;
   }
 
   @override
@@ -1688,32 +1658,43 @@ class _PageInkState extends State<PageInk> {
       onPointerMove: _onMove,
       onPointerUp: _onUp,
       behavior: HitTestBehavior.translucent,
-      child: RepaintBoundary(
-        child: CustomPaint(
-          painter: StrokePainter(
-            committed: _strokes,
-            active: () => _active,
-            repaint: _repaint,
-            onPaintSize: (s) => _canvasSize = s,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Committed ink: its own RepaintBoundary so a move never redraws it.
+          RepaintBoundary(
+            child: CustomPaint(
+              painter: _CommittedPainter(
+                strokes: _strokes,
+                repaint: _committedRepaint,
+                onPaintSize: (s) => _canvasSize = s,
+              ),
+              child: const SizedBox.expand(),
+            ),
           ),
-          child: const SizedBox.expand(),
-        ),
+          // In-progress stroke on top — the only thing repainting mid-stroke.
+          CustomPaint(
+            painter: _ActivePainter(
+              active: () => _active,
+              repaint: _activeRepaint,
+            ),
+            child: const SizedBox.expand(),
+          ),
+        ],
       ),
     );
   }
 }
 
-class StrokePainter extends CustomPainter {
-  final List<Stroke> committed;
-  final Stroke? Function() active;
+class _CommittedPainter extends CustomPainter {
+  final List<Stroke> strokes;
 
-  // Reports the actual canvas size on every paint. The verse uses it to stamp
+  // Reports the actual canvas size on every paint. The page uses it to stamp
   // capture boxes on new strokes and to hit-test the eraser in canvas space.
   final ValueChanged<Size>? onPaintSize;
 
-  StrokePainter({
-    required this.committed,
-    required this.active,
+  _CommittedPainter({
+    required this.strokes,
     required Listenable repaint,
     this.onPaintSize,
   }) : super(repaint: repaint);
@@ -1721,46 +1702,29 @@ class StrokePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     onPaintSize?.call(size);
-    for (final s in committed) {
-      _drawStroke(canvas, s, size);
-    }
-    final a = active();
-    if (a != null) _drawStroke(canvas, a, size);
-  }
-
-  void _drawStroke(Canvas canvas, Stroke stroke, Size size) {
-    final pts = stroke.points;
-    if (pts.isEmpty) return;
-
-    // Map capture-time coordinates onto the current canvas. For unchanged
-    // layouts (and legacy strokes) this is a 1:1 identity, so the common path
-    // costs only two divisions and a multiply per point.
-    final (sx, sy) = stroke.scaleTo(size);
-    Offset at(StrokePoint p) => Offset(p.x * sx, p.y * sy);
-
-    final paint = Paint()
-      ..color = stroke.color
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..style = PaintingStyle.stroke;
-
-    // Constant width — the committed ink matches the live pen preview exactly,
-    // so a stroke no longer "fattens" a moment after the pen lifts. (Pressure
-    // is still captured and could drive a subtle taper later if wanted.)
-    paint.strokeWidth = stroke.width;
-
-    if (pts.length == 1) {
-      canvas.drawPoints(PointMode.points, [at(pts.first)], paint);
-      return;
-    }
-    for (int i = 0; i < pts.length - 1; i++) {
-      canvas.drawLine(at(pts[i]), at(pts[i + 1]), paint);
+    for (final s in strokes) {
+      _paintStroke(canvas, s, size);
     }
   }
 
   @override
-  bool shouldRepaint(covariant StrokePainter old) =>
-      old.committed != committed;
+  bool shouldRepaint(covariant _CommittedPainter old) => old.strokes != strokes;
+}
+
+class _ActivePainter extends CustomPainter {
+  final Stroke? Function() active;
+
+  _ActivePainter({required this.active, required Listenable repaint})
+      : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final a = active();
+    if (a != null) _paintStroke(canvas, a, size);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ActivePainter old) => true;
 }
 
 // --- Book / chapter picker -----------------------------------------------

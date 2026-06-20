@@ -32,6 +32,20 @@ void main() {
       expect(restored.points[1].pressure, 0.5);
     });
 
+    test('round-trips the pen style and defaults to ballpoint', () {
+      final s = Stroke(
+        points: const [StrokePoint(0, 0)],
+        style: 'fountain',
+      );
+      expect(s.toJson()['st'], 'fountain');
+      expect(Stroke.fromJson(s.toJson()).style, 'fountain');
+
+      // Ballpoint is the default and is omitted from JSON.
+      final plain = Stroke(points: const [StrokePoint(0, 0)]);
+      expect(plain.toJson().containsKey('st'), isFalse);
+      expect(Stroke.fromJson(plain.toJson()).style, 'ballpoint');
+    });
+
     test('isNear detects a point within radius', () {
       final s = Stroke(points: const [StrokePoint(50, 50)]);
       expect(s.isNear(const Offset(55, 50), 10), isTrue);
