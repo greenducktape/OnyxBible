@@ -694,6 +694,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   // banner + auto-complete). Cleared by any manual navigation.
   PlanSession? _session;
 
+  // Whether the on-demand nib-size row is visible (toggled by tapping the
+  // already-selected pen preset a second time).
+  bool _showNibs = false;
+
   @override
   void initState() {
     super.initState();
@@ -1000,49 +1004,6 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     return result;
   }
 
-  // High-contrast strip shown while reading inside a plan. Lives OUTSIDE the
-  // pen area, so the pen can't draw on it.
-  Widget _buildPlanBanner(PlanSession s) {
-    final passages = s.dayPassages.map((r) => '${r.book} ${r.chapter}').join('  →  ');
-    return Container(
-      color: kInk,
-      padding: const EdgeInsets.fromLTRB(16, 8, 6, 8),
-      child: Row(
-        children: [
-          const Icon(Icons.event_note, size: 16, color: kPaper),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                    'PLAN · DAY ${s.dayIndex + 1} OF ${s.plan.length} · '
-                    '${s.cursor + 1}/${s.passageCount}',
-                    style: GoogleFonts.crimsonPro(
-                        fontSize: 10,
-                        color: kPaper,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.5)),
-                Text(passages,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.crimsonPro(
-                        fontSize: 15,
-                        color: kPaper,
-                        fontWeight: FontWeight.w500)),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: 'Leave plan',
-            icon: const Icon(Icons.close, size: 20, color: kPaper),
-            onPressed: () => setState(() => _session = null),
-          ),
-        ],
-      ),
-    );
-  }
-
   // --- Build --------------------------------------------------------------
 
   @override
@@ -1052,11 +1013,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
         bottom: false,
         child: Column(
           children: [
-            _buildTopBar(),
-            _buildPenRail(),
-            if (_session != null) _buildPlanBanner(_session!),
+            _buildUnifiedBar(),
+            if (_showNibs) _buildNibRow(),
             // The pen-capture area is ONLY the page, so native ink can't land
-            // on the toolbar or the bottom navigation.
+            // on the toolbar. Canvas takes all remaining height — no bottom bar.
             Expanded(
               child: OnyxSdkPenArea(
                 // A 1ms flip of refreshDelay triggers a native full e-ink
@@ -1071,16 +1031,17 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
                 child: _buildBody(),
               ),
             ),
-            _buildBottomBar(),
           ],
         ),
       ),
     );
   }
 
-  // A deliberately minimal toolbar — the Bible is the artifact, not an app full
-  // of controls. Only reading/writing tools live here; layout is locked.
-  Widget _buildTopBar() {
+  // Single unified bar — menu, chapter title, plan day (when active), undo/redo,
+  // all 5 pen presets + eraser, refresh. Tapping an already-selected pen a
+  // second time reveals the on-demand nib-size row below. No separate pen rail;
+  // no bottom navigation bar — the canvas takes all remaining height.
+  Widget _buildUnifiedBar() {
     return Container(
       height: 52,
       decoration: const BoxDecoration(
@@ -1093,28 +1054,41 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             icon: const Icon(Icons.menu, color: kInk),
             onPressed: _openMenu,
           ),
-          Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _openPicker,
-              child: Row(
-                children: [
-                  Flexible(
-                    child: Text('$_book $_chapter',
-                        overflow: TextOverflow.ellipsis,
-                        style: kTitleStyle(20)),
-                  ),
-                  const SizedBox(width: 4),
-                  const Icon(Icons.expand_more, size: 18, color: kMuted),
-                ],
-              ),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _openPicker,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('$_book $_chapter',
+                    overflow: TextOverflow.ellipsis,
+                    style: kTitleStyle(18)),
+                const SizedBox(width: 2),
+                const Icon(Icons.expand_more, size: 16, color: kMuted),
+              ],
             ),
           ),
+          if (_session != null) ...[
+            const SizedBox(width: 8),
+            Text(
+              'Day ${_session!.dayIndex + 1}·${_session!.plan.length}',
+              style: GoogleFonts.crimsonPro(
+                  fontSize: 12, color: kMuted, fontWeight: FontWeight.w600),
+            ),
+            GestureDetector(
+              onTap: () => setState(() => _session = null),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 4),
+                child: Icon(Icons.close, size: 14, color: kMuted),
+              ),
+            ),
+          ],
+          const Spacer(),
           ValueListenableBuilder<bool>(
             valueListenable: kUndo.canUndo,
             builder: (context, can, _) => IconButton(
               tooltip: 'Undo',
-              icon: const Icon(Icons.undo),
+              icon: const Icon(Icons.undo, size: 22),
               color: kInk,
               disabledColor: kDisabled,
               onPressed: can ? () => kUndo.undo() : null,
@@ -1124,15 +1098,39 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             valueListenable: kUndo.canRedo,
             builder: (context, can, _) => IconButton(
               tooltip: 'Redo',
-              icon: const Icon(Icons.redo),
+              icon: const Icon(Icons.redo, size: 22),
               color: kInk,
               disabledColor: kDisabled,
               onPressed: can ? () => kUndo.redo() : null,
             ),
           ),
+          for (var i = 0; i < kPenPresets.length; i++)
+            _railTool(
+              icon: kPenPresets[i].icon,
+              tooltip: kPenPresets[i].label,
+              selected: !_isEraser && _presetIndex == i,
+              onTap: () => setState(() {
+                if (!_isEraser && _presetIndex == i) {
+                  _showNibs = !_showNibs; // second tap: toggle nib row
+                } else {
+                  _presetIndex = i;
+                  _tool = PenTool.pen;
+                  _showNibs = false;
+                }
+              }),
+            ),
+          _railTool(
+            icon: Icons.cleaning_services_outlined,
+            tooltip: 'Eraser',
+            selected: _isEraser,
+            onTap: () => setState(() {
+              _tool = _isEraser ? PenTool.pen : PenTool.eraser;
+              _showNibs = false;
+            }),
+          ),
           IconButton(
             tooltip: 'Refresh screen',
-            icon: const Icon(Icons.autorenew, color: kInk),
+            icon: const Icon(Icons.autorenew, size: 22, color: kInk),
             onPressed: _forceRefresh,
           ),
         ],
@@ -1140,40 +1138,19 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     );
   }
 
-  // A flat writing rail: every pen is one tap away (no nested menu), with the
-  // eraser and a row of nib sizes beside it. Selection is shown by a thin ink
-  // underline rather than chips/elevation — closer to a notetaker's tool strip
-  // than an app toolbar.
-  Widget _buildPenRail() {
+  // On-demand nib-size row — shown below the unified bar only when _showNibs is
+  // true (activated by tapping the already-selected pen a second time). Selecting
+  // a nib hides the row immediately.
+  Widget _buildNibRow() {
     return Container(
-      height: 46,
+      height: 36,
       decoration: const BoxDecoration(
         color: kPaper,
         border: Border(bottom: BorderSide(color: kDisabled, width: 1)),
       ),
       child: Row(
         children: [
-          const SizedBox(width: 4),
-          for (var i = 0; i < kPenPresets.length; i++)
-            _railTool(
-              icon: kPenPresets[i].icon,
-              tooltip: kPenPresets[i].label,
-              selected: !_isEraser && _presetIndex == i,
-              onTap: () => setState(() {
-                _presetIndex = i;
-                _tool = PenTool.pen;
-              }),
-            ),
-          _railTool(
-            icon: Icons.cleaning_services_outlined,
-            tooltip: 'Eraser',
-            selected: _isEraser,
-            onTap: () => setState(
-                () => _tool = _isEraser ? PenTool.pen : PenTool.eraser),
-          ),
-          const SizedBox(width: 6),
-          Container(width: 1, height: 24, color: kDisabled),
-          const SizedBox(width: 6),
+          const SizedBox(width: 12),
           for (var i = 0; i < _widths.length; i++) _railNib(i),
           const Spacer(),
         ],
@@ -1211,6 +1188,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   // A dot whose size tracks the nib width; the selected one is filled.
+  // Selecting a nib also closes the on-demand nib row.
   Widget _railNib(int i) {
     final selected = !_isEraser && _widthIndex == i;
     final d = (5 + _widths[i] * 1.5).clamp(6.0, 17.0);
@@ -1219,12 +1197,13 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       child: InkResponse(
         onTap: () => setState(() {
           _widthIndex = i;
+          _showNibs = false;
           _persist();
         }),
         radius: 22,
         child: SizedBox(
           width: 34,
-          height: 46,
+          height: 36,
           child: Center(
             child: Container(
               width: d,
@@ -1242,12 +1221,36 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     );
   }
 
+  // Kindle-style finger-tap page turning. Wraps any body child with a Listener
+  // that catches non-stylus pointer-down events in the left/right 25% of the
+  // screen and turns the page. HitTestBehavior.translucent lets the underlying
+  // PageInk Listener also receive every event — stylus drawing is unaffected.
+  Widget _withFingerPageTurn(Widget child) {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (e) {
+        if (_showNibs) setState(() => _showNibs = false);
+        // Stylus events are for drawing; only finger taps navigate.
+        if (e.kind == PointerDeviceKind.stylus ||
+            e.kind == PointerDeviceKind.invertedStylus) return;
+        final w = context.size?.width ?? 0;
+        if (e.localPosition.dx < w * 0.25) {
+          _prevPage();
+        } else if (e.localPosition.dx > w * 0.75) {
+          _nextPage();
+        }
+      },
+      child: child,
+    );
+  }
+
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(child: CircularProgressIndicator(color: kInk));
+      return _withFingerPageTurn(
+          const Center(child: CircularProgressIndicator(color: kInk)));
     }
     if (_hasError) {
-      return Center(
+      return _withFingerPageTurn(Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1269,10 +1272,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             ),
           ],
         ),
-      );
+      ));
     }
 
-    return LayoutBuilder(
+    return _withFingerPageTurn(LayoutBuilder(
       builder: (context, constraints) {
         final contentWidth =
             math.min(constraints.maxWidth - kHPadding * 2, kMaxContentWidth);
@@ -1363,70 +1366,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
           },
         );
       },
-    );
+    ));
   }
 
-  Widget _buildBottomBar() {
-    final canPrevChapter = prevChapterOf(_book, _chapter) != null;
-    final canNextChapter = nextChapterOf(_book, _chapter) != null;
-    final atStart = _page == 0 && !canPrevChapter;
-    final atEnd = _page >= _pageCount - 1 && !canNextChapter;
-
-    return SafeArea(
-      top: false,
-      child: SizedBox(
-        height: 56,
-        child: Row(
-          children: [
-            _NavButton(
-                icon: Icons.first_page,
-                tooltip: 'Previous chapter',
-                onPressed: canPrevChapter ? _prevChapter : null),
-            _NavButton(
-                icon: Icons.chevron_left,
-                tooltip: 'Previous page',
-                onPressed: atStart ? null : _prevPage),
-            Expanded(
-              child: Center(
-                child: Text(
-                  _pageCount > 0 ? '${_page + 1} / $_pageCount' : '–',
-                  style: GoogleFonts.crimsonPro(
-                      fontSize: 15, color: kMuted, fontWeight: FontWeight.w600),
-                ),
-              ),
-            ),
-            _NavButton(
-                icon: Icons.chevron_right,
-                tooltip: 'Next page',
-                onPressed: atEnd ? null : _nextPage),
-            _NavButton(
-                icon: Icons.last_page,
-                tooltip: 'Next chapter',
-                onPressed: canNextChapter ? _nextChapter : null),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _NavButton extends StatelessWidget {
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback? onPressed;
-  const _NavButton(
-      {required this.icon, required this.tooltip, required this.onPressed});
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      tooltip: tooltip,
-      icon: Icon(icon, size: 26),
-      color: kInk,
-      disabledColor: kDisabled,
-      onPressed: onPressed,
-    );
-  }
 }
 
 /// Small bar that visualises the current stroke width in the toolbar.
