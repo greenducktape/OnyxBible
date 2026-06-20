@@ -13,6 +13,7 @@ class Settings {
   final int widthIndex; // index into the reader's stroke-width list
   final String translation; // translation id (see scripture.dart registry)
   final int textScaleIndex; // index into the reader's text-size steps
+  final bool ignoreTouch; // palm rejection: ignore finger touches (pen only)
 
   const Settings({
     this.lastBook = 'John',
@@ -20,6 +21,7 @@ class Settings {
     this.widthIndex = 1,
     this.translation = 'kjv',
     this.textScaleIndex = 1,
+    this.ignoreTouch = false,
   });
 
   Settings copyWith({
@@ -28,6 +30,7 @@ class Settings {
     int? widthIndex,
     String? translation,
     int? textScaleIndex,
+    bool? ignoreTouch,
   }) =>
       Settings(
         lastBook: lastBook ?? this.lastBook,
@@ -35,6 +38,7 @@ class Settings {
         widthIndex: widthIndex ?? this.widthIndex,
         translation: translation ?? this.translation,
         textScaleIndex: textScaleIndex ?? this.textScaleIndex,
+        ignoreTouch: ignoreTouch ?? this.ignoreTouch,
       );
 
   Map<String, dynamic> toJson() => {
@@ -44,6 +48,7 @@ class Settings {
         'widthIndex': widthIndex,
         'translation': translation,
         'textScaleIndex': textScaleIndex,
+        'ignoreTouch': ignoreTouch,
       };
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
@@ -52,6 +57,7 @@ class Settings {
         widthIndex: (j['widthIndex'] as num?)?.toInt() ?? 1,
         translation: j['translation'] as String? ?? 'kjv',
         textScaleIndex: (j['textScaleIndex'] as num?)?.toInt() ?? 1,
+        ignoreTouch: j['ignoreTouch'] as bool? ?? false,
       );
 }
 

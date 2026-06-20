@@ -698,6 +698,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   // already-selected pen preset a second time).
   bool _showNibs = false;
 
+  // Palm rejection: when on, finger touches are ignored so a resting hand can't
+  // flip the page; the page is turned with the on-bar arrows instead. Persisted.
+  bool _ignoreTouch = SettingsStore.value.ignoreTouch;
+
   @override
   void initState() {
     super.initState();
@@ -722,10 +726,11 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   void _persist() {
-    // Reading position lives on the (otherwise locked) Bible; stroke width is a
-    // global tool preference, not part of the printed layout.
+    // Reading position lives on the (otherwise locked) Bible; stroke width and
+    // palm rejection are global tool preferences, not part of the printed layout.
     LibraryStore.rememberPosition(_book, _chapter);
-    SettingsStore.update(SettingsStore.value.copyWith(widthIndex: _widthIndex));
+    SettingsStore.update(SettingsStore.value
+        .copyWith(widthIndex: _widthIndex, ignoreTouch: _ignoreTouch));
   }
 
   Future<void> _loadChapter() async {
@@ -1054,18 +1059,23 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             icon: const Icon(Icons.menu, color: kInk),
             onPressed: _openMenu,
           ),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _openPicker,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('$_book $_chapter',
-                    overflow: TextOverflow.ellipsis,
-                    style: kTitleStyle(18)),
-                const SizedBox(width: 2),
-                const Icon(Icons.expand_more, size: 16, color: kMuted),
-              ],
+          Flexible(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _openPicker,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text('$_book $_chapter',
+                        overflow: TextOverflow.ellipsis,
+                        softWrap: false,
+                        style: kTitleStyle(18)),
+                  ),
+                  const SizedBox(width: 2),
+                  const Icon(Icons.expand_more, size: 16, color: kMuted),
+                ],
+              ),
             ),
           ),
           if (_session != null) ...[
@@ -1081,6 +1091,23 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
                 padding: EdgeInsets.symmetric(horizontal: 4),
                 child: Icon(Icons.close, size: 14, color: kMuted),
               ),
+            ),
+          ],
+          // With palm rejection on, finger side-taps are off, so surface the
+          // page arrows here as the way to turn pages.
+          if (_ignoreTouch) ...[
+            const SizedBox(width: 4),
+            IconButton(
+              tooltip: 'Previous page',
+              icon: const Icon(Icons.chevron_left, size: 24),
+              color: kInk,
+              onPressed: _prevPage,
+            ),
+            IconButton(
+              tooltip: 'Next page',
+              icon: const Icon(Icons.chevron_right, size: 24),
+              color: kInk,
+              onPressed: _nextPage,
             ),
           ],
           const Spacer(),
@@ -1126,6 +1153,20 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             onTap: () => setState(() {
               _tool = _isEraser ? PenTool.pen : PenTool.eraser;
               _showNibs = false;
+            }),
+          ),
+          // Palm rejection toggle: a crossed-out hand when finger touch is off.
+          // Selected (underlined) = touches ignored, only the pen is recognised.
+          _railTool(
+            icon: _ignoreTouch
+                ? Icons.do_not_touch_outlined
+                : Icons.back_hand_outlined,
+            tooltip: _ignoreTouch ? 'Touch off (pen only)' : 'Ignore touch',
+            selected: _ignoreTouch,
+            onTap: () => setState(() {
+              _ignoreTouch = !_ignoreTouch;
+              _showNibs = false;
+              _persist();
             }),
           ),
           IconButton(
@@ -1235,6 +1276,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             e.kind == PointerDeviceKind.invertedStylus) {
           return;
         }
+        // Palm rejection on: ignore finger touches so a resting hand can't flip
+        // the page. The on-bar arrows are the way to turn pages instead.
+        if (_ignoreTouch) return;
         final w = context.size?.width ?? 0;
         if (e.localPosition.dx < w * 0.25) {
           _prevPage();
