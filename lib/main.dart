@@ -494,6 +494,61 @@ class _RootScreenState extends State<RootScreen> {
 
 enum PenTool { pen, eraser }
 
+/// A Boox-style pen preset. The native side uses [nativeStyle] to render the
+/// live preview; [widthScale] biases each preset's nib (e.g. the brush sits a
+/// little wider than the ballpoint).
+class PenPreset {
+  final String id;
+  final String label;
+  final IconData icon;
+  final OnyxStrokeStyle nativeStyle;
+  final double widthScale;
+
+  const PenPreset({
+    required this.id,
+    required this.label,
+    required this.icon,
+    required this.nativeStyle,
+    this.widthScale = 1.0,
+  });
+}
+
+const List<PenPreset> kPenPresets = [
+  PenPreset(
+    id: 'ballpoint',
+    label: 'Ballpoint',
+    icon: Icons.edit, // pencil-like
+    nativeStyle: OnyxStrokeStyle.pen, // uniform: no fattening
+  ),
+  PenPreset(
+    id: 'fountain',
+    label: 'Fountain',
+    icon: Icons.create,
+    nativeStyle: OnyxStrokeStyle.fountainPen,
+    widthScale: 1.2,
+  ),
+  PenPreset(
+    id: 'brush',
+    label: 'Brush',
+    icon: Icons.brush,
+    nativeStyle: OnyxStrokeStyle.brush,
+    widthScale: 1.5,
+  ),
+  PenPreset(
+    id: 'pencil',
+    label: 'Pencil',
+    icon: Icons.draw,
+    nativeStyle: OnyxStrokeStyle.pencil,
+  ),
+  PenPreset(
+    id: 'marker',
+    label: 'Marker',
+    icon: Icons.format_paint,
+    nativeStyle: OnyxStrokeStyle.marker,
+    widthScale: 2.0,
+  ),
+];
+
 class BibleReaderScreen extends StatefulWidget {
   const BibleReaderScreen({super.key});
 
@@ -517,9 +572,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   // Drawing tools. A wider range of nib sizes; default to a fine line.
   static const List<double> _widths = [1.0, 1.5, 2.0, 3.0, 4.5, 6.0];
   int _widthIndex = 1;
+  int _presetIndex = 0; // ballpoint — uniform, matches commit no-fattening
   PenTool _tool = PenTool.pen;
 
-  double get _penWidth => _widths[_widthIndex];
+  PenPreset get _preset => kPenPresets[_presetIndex];
+  // Effective width: nib size scaled by the preset's bias.
+  double get _penWidth => _widths[_widthIndex] * _preset.widthScale;
   bool get _isEraser => _tool == PenTool.eraser;
 
   // The printed Bible whose locked layout this reader renders.
@@ -736,6 +794,91 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
     _goToChapter(ref.book, ref.chapter);
   }
 
+  // Boox-style pen picker: a row of pen-type chips with numeric thickness
+  // labels above (the standard Boox toolbar shows 1.15/0.60/0.35/0.40 above each
+  // pen icon). Live-updates the reader so the next stroke uses the new preset.
+  Future<void> _openPenSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kPaper,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void pickPen(int i) {
+            setState(() => _presetIndex = i);
+            setSheet(() {});
+          }
+
+          void pickWidth(int i) {
+            setState(() => _widthIndex = i);
+            _persist();
+            setSheet(() {});
+          }
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('PEN',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 12,
+                          letterSpacing: 3,
+                          fontWeight: FontWeight.w600,
+                          color: kMuted)),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      for (var i = 0; i < kPenPresets.length; i++) ...[
+                        Expanded(
+                          child: _PenPresetButton(
+                            preset: kPenPresets[i],
+                            // Numeric thickness label, Boox-bar style.
+                            width: _widths[_widthIndex] *
+                                kPenPresets[i].widthScale,
+                            selected: _presetIndex == i,
+                            onTap: () => pickPen(i),
+                          ),
+                        ),
+                        if (i < kPenPresets.length - 1)
+                          const SizedBox(width: 4),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 22),
+                  Text('THICKNESS',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 12,
+                          letterSpacing: 3,
+                          fontWeight: FontWeight.w600,
+                          color: kMuted)),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (var i = 0; i < _widths.length; i++)
+                        _ThicknessChip(
+                          label: _widths[i].toStringAsFixed(1),
+                          width: _widths[i],
+                          selected: _widthIndex == i,
+                          onTap: () => pickWidth(i),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _openMenu() async {
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -912,10 +1055,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
                 // A 1ms flip of refreshDelay triggers a native full e-ink
                 // refresh that clears pen ghosting after page/chapter changes.
                 refreshDelay: Duration(milliseconds: 1200 + (_refreshTick % 2)),
-                // Uniform-width pen: its native preview matches the uniform
-                // Flutter render, so ink doesn't fatten after the refresh
-                // (the tapered fountain pen mismatched the committed stroke).
-                strokeStyle: OnyxStrokeStyle.pen,
+                // Active pen preset chooses the native style. The default
+                // ballpoint is uniform-width, so the committed Flutter stroke
+                // matches the live preview (no post-refresh fattening).
+                strokeStyle: _preset.nativeStyle,
                 strokeColor: _isEraser ? Colors.white : Colors.black,
                 strokeWidth: _penWidth,
                 child: _buildBody(),
@@ -981,12 +1124,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
             ),
           ),
           IconButton(
-            tooltip: 'Stroke width',
-            icon: _WidthGlyph(width: _penWidth, active: !_isEraser),
-            onPressed: () {
-              setState(() => _widthIndex = (_widthIndex + 1) % _widths.length);
-              _persist();
-            },
+            tooltip: '${_preset.label} · ${_widths[_widthIndex].toStringAsFixed(1)}',
+            icon: _PenGlyph(
+                icon: _preset.icon,
+                width: _penWidth.clamp(2.0, 8.0),
+                active: !_isEraser),
+            onPressed: _openPenSheet,
           ),
           IconButton(
             tooltip: _isEraser ? 'Eraser — tap for pen' : 'Pen — tap for eraser',
@@ -1201,25 +1344,131 @@ class _NavButton extends StatelessWidget {
 }
 
 /// Small bar that visualises the current stroke width in the toolbar.
-class _WidthGlyph extends StatelessWidget {
+/// Pen-type chip in the pen sheet. The numeric thickness sits ABOVE the glyph,
+/// matching the standard Boox notetaker bar in the reference image.
+class _PenPresetButton extends StatelessWidget {
+  final PenPreset preset;
   final double width;
-  final bool active;
-  const _WidthGlyph({required this.width, required this.active});
+  final bool selected;
+  final VoidCallback onTap;
+  const _PenPresetButton({
+    required this.preset,
+    required this.width,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 24,
-      height: 24,
-      child: Center(
-        child: Container(
-          width: 18,
-          height: width.clamp(2.0, 8.0),
-          decoration: BoxDecoration(
-            color: active ? kInk : kDisabled,
-            borderRadius: BorderRadius.circular(8),
-          ),
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border.all(color: selected ? kInk : kDisabled),
+          borderRadius: BorderRadius.circular(10),
         ),
+        child: Column(
+          children: [
+            Text(width.toStringAsFixed(2),
+                style: GoogleFonts.crimsonPro(
+                    fontSize: 11,
+                    color: kMuted,
+                    fontWeight: FontWeight.w600)),
+            const SizedBox(height: 2),
+            Icon(preset.icon, size: 26, color: kInk),
+            const SizedBox(height: 4),
+            Text(preset.label,
+                style: GoogleFonts.crimsonPro(
+                    fontSize: 12,
+                    color: selected ? kInk : kMuted,
+                    fontWeight:
+                        selected ? FontWeight.w700 : FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A thickness pick: a numeric label and a centred bar at that exact width.
+class _ThicknessChip extends StatelessWidget {
+  final String label;
+  final double width;
+  final bool selected;
+  final VoidCallback onTap;
+  const _ThicknessChip({
+    required this.label,
+    required this.width,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 56,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? kInk : kPaper,
+          border: Border.all(color: kInk),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label,
+                style: GoogleFonts.crimsonPro(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: selected ? kPaper : kInk)),
+            const SizedBox(height: 6),
+            Container(
+              width: 32,
+              height: width.clamp(1.0, 6.0),
+              decoration: BoxDecoration(
+                color: selected ? kPaper : kInk,
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Toolbar icon for the active pen: the preset's glyph above a thin width bar.
+/// Modelled on the Boox pen bar (small glyph, numeric width nearby).
+class _PenGlyph extends StatelessWidget {
+  final IconData icon;
+  final double width;
+  final bool active;
+  const _PenGlyph(
+      {required this.icon, required this.width, required this.active});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = active ? kInk : kDisabled;
+    return SizedBox(
+      width: 26,
+      height: 26,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 16, color: c),
+          const SizedBox(height: 2),
+          Container(
+            width: 16,
+            height: width.clamp(1.0, 6.0),
+            decoration:
+                BoxDecoration(color: c, borderRadius: BorderRadius.circular(8)),
+          ),
+        ],
       ),
     );
   }
