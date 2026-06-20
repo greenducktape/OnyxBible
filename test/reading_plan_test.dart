@@ -93,4 +93,71 @@ void main() {
       expect(seen.toSet().length, 929 + 260); // no duplicates
     });
   });
+
+  group('config-driven generator', () {
+    test('planLength = ceil(mainTrack / chaptersPerDay)', () {
+      // Cross-referenced whole Bible: main track is the 929 OT chapters.
+      expect(planLength(const PlanConfig(chaptersPerDay: 3)),
+          (929 / 3).ceil());
+      // New Testament only: 260 chapters.
+      expect(
+          planLength(
+              const PlanConfig(newTestamentOnly: true, chaptersPerDay: 1)),
+          260);
+      // Straight through: OT + NT = 1189 chapters.
+      expect(
+          planLength(const PlanConfig(crossReferenced: false, chaptersPerDay: 4)),
+          (1189 / 4).ceil());
+    });
+
+    test('cross-referenced plan reads OT + a linked NT passage on day 1', () {
+      final plan = generatePlan(graph, const PlanConfig(chaptersPerDay: 1));
+      final day1 = plan.days.first;
+      // Genesis 1 leads; a New Testament chapter is paired alongside it.
+      expect(day1.passages.first, const BibleRef('Genesis', 1));
+      expect(day1.passages.any((r) => !_isOt(r)), isTrue);
+    });
+
+    test('daily Psalm pulls Psalms out of the main track and adds one a day',
+        () {
+      final plan = generatePlan(
+          graph, const PlanConfig(chaptersPerDay: 3, dailyPsalm: true));
+      // Every day ends with a Psalm.
+      for (final d in plan.days) {
+        expect(d.passages.last.book, 'Psalms');
+      }
+      // Psalms are not also read as part of the OT main track (no day has a
+      // non-final Psalm from the OT track).
+      for (final d in plan.days) {
+        final nonFinal = d.passages.sublist(0, d.passages.length - 1);
+        expect(nonFinal.any((r) => r.book == 'Psalms'), isFalse);
+      }
+    });
+
+    test('New Testament only stays in the New Testament', () {
+      final plan = generatePlan(
+          graph, const PlanConfig(newTestamentOnly: true, chaptersPerDay: 2));
+      final allOt = plan.days.expand((d) => d.passages).where(_isOt);
+      expect(allOt, isEmpty);
+    });
+
+    test('chronological ordering still covers every OT chapter once', () {
+      final plan = generatePlan(
+          graph,
+          const PlanConfig(
+              chaptersPerDay: 5, ordering: PlanOrdering.chronological));
+      final ot = plan.days.expand((d) => d.passages).where(_isOt).toList();
+      expect(ot.length, 929);
+      expect(ot.toSet().length, 929);
+      // Genesis 1 is still where reading begins.
+      expect(plan.days.first.passages.first, const BibleRef('Genesis', 1));
+    });
+
+    test('narrative + duration read sensibly', () {
+      expect(durationLabel(7), '7 days');
+      expect(durationLabel(210), startsWith('about 7 months'));
+      expect(durationLabel(600), startsWith('about 1 year'));
+      expect(narrativeFor(const PlanConfig()), contains('Jesus'));
+    });
+  });
 }

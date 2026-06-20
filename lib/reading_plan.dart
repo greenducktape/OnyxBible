@@ -237,48 +237,293 @@ ReadingPlan wholeBiblePlan(
       id: id, title: title, subtitle: subtitle, days: days);
 }
 
-/// A selectable plan *kind*. The reader picks a kind and a length (days); the
-/// builder generates the plan for that length from the loaded graph.
-class PlanInfo {
-  final String id; // persisted in PlanState.planId
-  final String title;
-  final String subtitle;
-  final int maxDays; // longest sensible length for this kind
-  final int defaultDays;
-  final List<int> presets; // quick-pick lengths shown in the UI
-  final ReadingPlan Function(XrefGraph graph, int days) build;
-
-  const PlanInfo({
-    required this.id,
-    required this.title,
-    required this.subtitle,
-    required this.maxDays,
-    required this.defaultDays,
-    required this.presets,
-    required this.build,
-  });
-}
-
 /// Total chapters in the canon — the longest a whole-Bible plan can run.
 const int wholeBibleChapters = 1189;
 
-const List<PlanInfo> kPlans = [
-  PlanInfo(
-    id: 'wholeBible',
-    title: 'Whole Bible · cross-referenced',
-    subtitle: 'Every chapter — Old & New Testament paired by cross-reference',
-    maxDays: wholeBibleChapters,
-    defaultDays: 365,
-    presets: [365, 730, 1000],
-    build: _buildWholeBible,
-  ),
+// --- Configurable plan generator ------------------------------------------
+//
+// Instead of a fixed catalogue of plan "kinds", the reader composes a plan from
+// a handful of choices. The generator turns those choices into a concrete list
+// of reading-days, deterministically, so a plan can be re-derived from its
+// config alone (the store persists the config, not the day list).
+
+/// How the Old Testament main track is ordered.
+enum PlanOrdering {
+  /// Printed order: Genesis → Malachi.
+  canonical,
+
+  /// A best-effort historical order (whole books reordered; e.g. Job after
+  /// Genesis, the prophets among Kings/Chronicles).
+  chronological,
+}
+
+/// The choices that define a reading plan.
+class PlanConfig {
+  /// Chapters of the main track read each day (1..20).
+  final int chaptersPerDay;
+
+  /// Pair each day's reading with a cross-referenced New Testament passage
+  /// (Old + New every day). When false, the whole Bible is read straight
+  /// through, back to back.
+  final bool crossReferenced;
+
+  /// Add one Psalm to every day (cycling Psalms 1..150). When on, Psalms are
+  /// pulled out of the main track so they aren't read twice.
+  final bool dailyPsalm;
+
+  /// Read only the New Testament.
+  final bool newTestamentOnly;
+
+  /// Old Testament ordering (ignored when [newTestamentOnly]).
+  final PlanOrdering ordering;
+
+  const PlanConfig({
+    this.chaptersPerDay = 3,
+    this.crossReferenced = true,
+    this.dailyPsalm = false,
+    this.newTestamentOnly = false,
+    this.ordering = PlanOrdering.canonical,
+  });
+
+  PlanConfig copyWith({
+    int? chaptersPerDay,
+    bool? crossReferenced,
+    bool? dailyPsalm,
+    bool? newTestamentOnly,
+    PlanOrdering? ordering,
+  }) =>
+      PlanConfig(
+        chaptersPerDay: chaptersPerDay ?? this.chaptersPerDay,
+        crossReferenced: crossReferenced ?? this.crossReferenced,
+        dailyPsalm: dailyPsalm ?? this.dailyPsalm,
+        newTestamentOnly: newTestamentOnly ?? this.newTestamentOnly,
+        ordering: ordering ?? this.ordering,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'chaptersPerDay': chaptersPerDay,
+        'crossReferenced': crossReferenced,
+        'dailyPsalm': dailyPsalm,
+        'newTestamentOnly': newTestamentOnly,
+        'ordering': ordering.name,
+      };
+
+  factory PlanConfig.fromJson(Map<String, dynamic> j) => PlanConfig(
+        chaptersPerDay: (j['chaptersPerDay'] as num?)?.toInt() ?? 3,
+        crossReferenced: j['crossReferenced'] as bool? ?? true,
+        dailyPsalm: j['dailyPsalm'] as bool? ?? false,
+        newTestamentOnly: j['newTestamentOnly'] as bool? ?? false,
+        ordering: PlanOrdering.values.firstWhere(
+          (o) => o.name == j['ordering'],
+          orElse: () => PlanOrdering.canonical,
+        ),
+      );
+
+  /// A short, human title summarising the choices.
+  String get title {
+    if (newTestamentOnly) {
+      return dailyPsalm ? 'New Testament + a daily Psalm' : 'New Testament';
+    }
+    if (crossReferenced) return 'Whole Bible · cross-referenced';
+    return 'Whole Bible · straight through';
+  }
+}
+
+/// A reasonable chronological order of the Old Testament, book by book. Not a
+/// scholarly reconstruction — a familiar reading order (Job amid the patriarchs,
+/// the writing prophets among the kings). Any OT book missing here is appended
+/// in canonical order so every chapter is always covered exactly once.
+const List<String> _kChronologicalOtBooks = [
+  'Genesis', 'Job', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy',
+  'Joshua', 'Judges', 'Ruth', '1 Samuel', '2 Samuel', '1 Chronicles',
+  'Psalms', 'Song of Solomon', 'Proverbs', 'Ecclesiastes', '1 Kings',
+  '2 Chronicles', 'Obadiah', 'Joel', 'Jonah', 'Amos', 'Hosea', 'Isaiah',
+  'Micah', 'Nahum', 'Zephaniah', 'Habakkuk', 'Jeremiah', 'Lamentations',
+  '2 Kings', 'Ezekiel', 'Daniel', 'Haggai', 'Zechariah', 'Ezra',
+  'Nehemiah', 'Esther', 'Malachi',
 ];
 
-ReadingPlan _buildWholeBible(XrefGraph g, int days) => wholeBiblePlan(g,
-    id: 'wholeBible',
-    title: 'Whole Bible',
-    subtitle: 'Old & New Testament interleaved by cross-reference',
-    totalDays: days.clamp(1, wholeBibleChapters).toInt());
+List<BibleRef> _otChaptersChronological() {
+  final byName = <String, BibleBook>{
+    for (final b in kBibleBooks)
+      if (b.isOldTestament) b.name: b,
+  };
+  final out = <BibleRef>[];
+  final used = <String>{};
+  void emit(BibleBook b) {
+    used.add(b.name);
+    for (var c = 1; c <= b.chapters; c++) {
+      out.add(BibleRef(b.name, c));
+    }
+  }
 
-PlanInfo planInfoById(String id) =>
-    kPlans.firstWhere((p) => p.id == id, orElse: () => kPlans.first);
+  for (final name in _kChronologicalOtBooks) {
+    final b = byName[name];
+    if (b != null && !used.contains(name)) emit(b);
+  }
+  // Defensive: anything not in the curated list, in canonical order.
+  for (final b in kBibleBooks) {
+    if (b.isOldTestament && !used.contains(b.name)) emit(b);
+  }
+  return out;
+}
+
+List<BibleRef> _otChapters(PlanOrdering o) => o == PlanOrdering.chronological
+    ? _otChaptersChronological()
+    : chaptersOfTestament(oldTestament: true);
+
+List<BibleRef> _withoutPsalms(List<BibleRef> xs) =>
+    [for (final r in xs) if (r.book != 'Psalms') r];
+
+/// The main reading track (before the daily Psalm / cross-ref NT are added).
+List<BibleRef> _mainTrack(PlanConfig c) {
+  List<BibleRef> main;
+  if (c.newTestamentOnly) {
+    main = chaptersOfTestament(oldTestament: false);
+  } else if (c.crossReferenced) {
+    main = _otChapters(c.ordering); // NT is added per-day by cross-reference
+  } else {
+    main = [..._otChapters(c.ordering), ...chaptersOfTestament(oldTestament: false)];
+  }
+  return c.dailyPsalm ? _withoutPsalms(main) : main;
+}
+
+/// How many reading-days [config] produces — computable without the graph, so
+/// the builder UI can show a duration before the plan is generated.
+int planLength(PlanConfig config) {
+  final cpd = config.chaptersPerDay.clamp(1, 20).toInt();
+  final main = _mainTrack(config);
+  return (main.length / cpd).ceil();
+}
+
+/// Build the concrete plan for [config]. [id] becomes the plan's id (so a live
+/// session can be matched back to its saved-plan progress). Deterministic.
+ReadingPlan generatePlan(XrefGraph graph, PlanConfig config,
+    {String id = 'custom'}) {
+  final cpd = config.chaptersPerDay.clamp(1, 20).toInt();
+  final main = _mainTrack(config);
+  final totalDays = main.isEmpty ? 0 : (main.length / cpd).ceil();
+
+  final pairing = config.crossReferenced && !config.newTestamentOnly;
+  // Remaining (unscheduled) NT chapters, consumed greedily by affinity.
+  final ntPool = pairing ? chaptersOfTestament(oldTestament: false) : <BibleRef>[];
+  final ntTotal = ntPool.length;
+  const window = 24;
+
+  final days = <PlanDay>[];
+  for (var d = 0; d < totalDays; d++) {
+    final start = d * cpd;
+    final end = math.min(start + cpd, main.length);
+    final dayMain = main.sublist(start, end);
+    final passages = <BibleRef>[...dayMain];
+    var votes = 0;
+
+    if (pairing && ntPool.isNotEmpty) {
+      // Spread the NT evenly across the plan; usually ~1 chapter/day. Each day
+      // takes the most strongly cross-referenced NT chapter from a near-front
+      // window of what's left, so OT and NT stay linked by meaning.
+      final ntCount =
+          ((d + 1) * ntTotal) ~/ totalDays - (d * ntTotal) ~/ totalDays;
+      for (var k = 0; k < ntCount && ntPool.isNotEmpty; k++) {
+        final lim = math.min(window, ntPool.length);
+        var best = 0;
+        var bestW = -1;
+        for (var j = 0; j < lim; j++) {
+          var w = 0;
+          for (final o in dayMain) {
+            w += graph.affinity(o, ntPool[j]);
+          }
+          if (w > bestW) {
+            bestW = w;
+            best = j;
+          }
+        }
+        if (bestW > 0) votes += bestW;
+        passages.add(ntPool.removeAt(best));
+      }
+    }
+
+    if (config.dailyPsalm) {
+      passages.add(BibleRef('Psalms', (d % 150) + 1));
+    }
+
+    days.add(PlanDay(passages, pairingVotes: votes));
+  }
+
+  return ReadingPlan(
+    id: id,
+    title: config.title,
+    subtitle: _subtitleFor(config),
+    days: days,
+  );
+}
+
+String _subtitleFor(PlanConfig c) {
+  if (c.newTestamentOnly) {
+    return c.dailyPsalm
+        ? 'The New Testament with a Psalm each day'
+        : 'Straight through the New Testament';
+  }
+  if (c.crossReferenced) {
+    return 'Old & New Testament linked by cross-reference each day';
+  }
+  return 'Genesis to Revelation, in order';
+}
+
+/// A friendly duration like "12 days", "about 7 months", "about 1 year 8 months".
+String durationLabel(int days) {
+  if (days <= 0) return '—';
+  if (days < 45) return '$days days';
+  final months = (days / 30.4).round();
+  if (months < 12) return 'about $months months';
+  final years = days ~/ 365;
+  final remMonths = ((days - years * 365) / 30.4).round();
+  final y = '$years year${years == 1 ? '' : 's'}';
+  if (remMonths <= 0) return 'about $y';
+  return 'about $y $remMonths month${remMonths == 1 ? '' : 's'}';
+}
+
+/// A rich, narrative description of what [config] will feel like to read,
+/// mirroring the way printed reading plans introduce themselves.
+String narrativeFor(PlanConfig config) {
+  final days = planLength(config);
+  final dur = durationLabel(days);
+  final cpd = config.chaptersPerDay;
+  final psalm = config.dailyPsalm;
+
+  if (config.newTestamentOnly) {
+    final b = StringBuffer(
+        'This plan reads straight through the New Testament in $dur, '
+        '$cpd chapter${cpd == 1 ? '' : 's'} a day');
+    b.write(psalm
+        ? ', with a Psalm every day to carry the prayers of Israel alongside '
+            'the life of the church.'
+        : '.');
+    return b.toString();
+  }
+
+  if (!config.crossReferenced) {
+    final b = StringBuffer(
+        'This plan reads the whole Bible from Genesis to Revelation in $dur, '
+        '$cpd chapter${cpd == 1 ? '' : 's'} a day, in order');
+    b.write(psalm ? ', with a Psalm every day.' : '.');
+    return b.toString();
+  }
+
+  // The flagship: cross-referenced whole-Bible plan.
+  final orderWord = config.ordering == PlanOrdering.chronological
+      ? 'in roughly chronological order'
+      : 'in order';
+  final b = StringBuffer(
+      'This plan journeys through the entire Bible in $dur, with both an Old '
+      'and a New Testament reading every day. You follow the Old Testament '
+      '$orderWord');
+  if (psalm) {
+    b.write(', with the Psalms and prophets intermingled as a Psalm joins '
+        'each day');
+  }
+  b.write('. Every day also includes a New Testament passage chosen because '
+      "Scripture itself links it to the day's reading — so you keep seeing how "
+      'the Bible is one story pointing to Jesus.');
+  return b.toString();
+}

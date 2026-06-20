@@ -835,8 +835,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
       return;
     }
     // Day complete → auto-mark and move to the next day.
-    final ps = PlanStore.value;
-    if (ps.planId == s.plan.id && s.dayIndex == ps.completedCount) {
+    final ps = PlanStore.active;
+    if (ps != null && ps.id == s.plan.id && s.dayIndex == ps.completedCount) {
       PlanStore.completeCurrent();
     }
     if (!s.isLastDay) {
@@ -2015,8 +2015,8 @@ class PlansScreen extends StatefulWidget {
 
 class _PlansScreenState extends State<PlansScreen> {
   XrefGraph? _graph;
-  ReadingPlan? _active;
   bool _loading = true;
+  String? _detailId; // when set, show this saved plan's progress
 
   @override
   void initState() {
@@ -2026,32 +2026,43 @@ class _PlansScreenState extends State<PlansScreen> {
 
   Future<void> _load() async {
     try {
-      final graph = await loadXrefGraph();
-      if (!mounted) return;
-      _graph = graph;
-      _rebuildActive();
+      _graph = await loadXrefGraph();
     } catch (_) {
-      // Leave _graph null; the screen shows the plan chooser without a card.
+      // Leave _graph null; the library still lists plans, just without detail.
     }
     if (mounted) setState(() => _loading = false);
   }
 
-  void _rebuildActive() {
-    final g = _graph;
-    final s = PlanStore.value;
-    _active = (g != null && s.hasPlan)
-        ? planInfoById(s.planId!).build(g, s.totalDays)
-        : null;
+  SavedPlan? get _detail {
+    final id = _detailId;
+    if (id == null) return null;
+    for (final p in PlanStore.plans) {
+      if (p.id == id) return p;
+    }
+    return null;
   }
 
-  Future<void> _start(PlanInfo info) async {
-    final days = await _chooseLength(info);
-    if (days == null || _graph == null) return;
-    PlanStore.start(info.id, days);
-    setState(_rebuildActive);
+  Future<void> _newPlan() async {
+    final config = await Navigator.of(context).push<PlanConfig>(
+      MaterialPageRoute(builder: (_) => const PlanBuilderScreen()),
+    );
+    if (config == null || !mounted) return;
+    final sp = PlanStore.create(config, planLength(config));
+    setState(() => _detailId = sp.id);
   }
 
-  // Mark the current reading done (advances the self-paced pointer).
+  void _openDetail(SavedPlan sp) {
+    PlanStore.setActive(sp.id);
+    setState(() => _detailId = sp.id);
+  }
+
+  void _deletePlan(SavedPlan sp) {
+    PlanStore.delete(sp.id);
+    setState(() {
+      if (_detailId == sp.id) _detailId = null;
+    });
+  }
+
   void _complete() => setState(PlanStore.completeCurrent);
   void _undo() => setState(PlanStore.uncompleteLast);
 
@@ -2060,12 +2071,19 @@ class _PlansScreenState extends State<PlansScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final detail = _detail;
     return Scaffold(
       backgroundColor: kPaper,
-      appBar: AppBar(title: Text('Reading plans', style: kTitleStyle(20))),
+      appBar: AppBar(
+        title: Text(detail == null ? 'Reading plans' : detail.title,
+            style: kTitleStyle(20)),
+        leading: detail == null
+            ? null
+            : BackButton(onPressed: () => setState(() => _detailId = null)),
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: kInk))
-          : (_active == null ? _chooseView() : _progressView(_active!)),
+          : (detail == null ? _libraryView() : _detailView(detail)),
     );
   }
 
@@ -2079,48 +2097,147 @@ class _PlansScreenState extends State<PlansScreen> {
                 color: kMuted)),
       );
 
-  // --- No active plan: choose a kind --------------------------------------
+  // --- Library: every saved plan keeps its own progress -------------------
 
-  Widget _chooseView() => ListView(
-        padding: const EdgeInsets.only(bottom: 28),
-        children: [
-          _sectionLabel('CHOOSE A PLAN'),
-          ...kPlans.map(_kindTile),
-          const SizedBox(height: 24),
-          _attribution(),
-        ],
-      );
-
-  Widget _kindTile(PlanInfo info) => InkWell(
-        onTap: () => _start(info),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(info.title,
-                        style: kTitleStyle(18, weight: FontWeight.w600)),
-                    const SizedBox(height: 2),
-                    Text(info.subtitle,
-                        style: GoogleFonts.crimsonPro(
-                            fontSize: 14, color: kMuted, height: 1.3)),
-                  ],
-                ),
+  Widget _libraryView() {
+    final plans = PlanStore.plans;
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 28),
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 4),
+          child: SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _newPlan,
+              icon: const Icon(Icons.add, size: 20),
+              label: const Text('New plan'),
+              style: FilledButton.styleFrom(
+                backgroundColor: kInk,
+                foregroundColor: kPaper,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
               ),
-              const SizedBox(width: 12),
-              const Icon(Icons.chevron_right, size: 22, color: kMuted),
-            ],
+            ),
           ),
         ),
+        if (plans.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 40, 24, 0),
+            child: Text(
+              'No plans yet. Build one and your progress is saved here — you '
+              'can start another any time without losing this one.',
+              style: GoogleFonts.crimsonPro(
+                  fontSize: 16, color: kMuted, height: 1.4),
+            ),
+          )
+        else ...[
+          _sectionLabel('YOUR PLANS'),
+          for (final sp in plans) _planCard(sp),
+        ],
+        const SizedBox(height: 22),
+        _attribution(),
+      ],
+    );
+  }
+
+  Widget _planCard(SavedPlan sp) {
+    final total = sp.totalDays;
+    final done = sp.completedCount.clamp(0, total);
+    final fraction = total == 0 ? 0.0 : done / total;
+    return InkWell(
+      onTap: () => _openDetail(sp),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 12, 8, 12),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(sp.title,
+                      style: kTitleStyle(18, weight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Text(
+                      sp.isFinished
+                          ? 'Finished · $total readings'
+                          : 'Reading ${done + 1} of $total',
+                      style: GoogleFonts.crimsonPro(
+                          fontSize: 14, color: kMuted)),
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(3),
+                    child: Container(
+                      height: 5,
+                      color: kDisabled,
+                      child: FractionallySizedBox(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: fraction == 0 ? 0.001 : fraction,
+                        child: Container(color: kInk),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Delete plan',
+              icon: const Icon(Icons.delete_outline, color: kMuted),
+              onPressed: () => _confirmDelete(sp),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDelete(SavedPlan sp) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: kPaper,
+        title: Text('Delete this plan?', style: kTitleStyle(18)),
+        content: Text('"${sp.title}" and its progress will be removed.',
+            style: GoogleFonts.crimsonPro(fontSize: 15, color: kInk)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child:
+                Text('Keep', style: GoogleFonts.crimsonPro(color: kMuted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('Delete',
+                style: GoogleFonts.crimsonPro(
+                    color: kInk, fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+    if (yes == true) _deletePlan(sp);
+  }
+
+  // --- One plan's progress ------------------------------------------------
+
+  Widget _detailView(SavedPlan sp) {
+    final g = _graph;
+    if (g == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text("Couldn't load cross-references for this plan.",
+              style: GoogleFonts.crimsonPro(fontSize: 16, color: kMuted)),
+        ),
       );
+    }
+    return _progressView(sp, generatePlan(g, sp.config, id: sp.id));
+  }
 
   // --- Active plan: self-paced progress -----------------------------------
 
-  Widget _progressView(ReadingPlan plan) {
-    final s = PlanStore.value;
+  Widget _progressView(SavedPlan sp, ReadingPlan plan) {
+    final s = sp;
     final total = plan.length;
     final done = s.completedCount.clamp(0, total).toInt();
     final fraction = total == 0 ? 0.0 : done / total;
@@ -2176,12 +2293,19 @@ class _PlansScreenState extends State<PlansScreen> {
         ),
 
         // The current (next) reading — the only thing you're asked to do.
-        if (current != null) _currentCard(done, current) else _finishedCard(),
+        if (current != null)
+          _currentCard(done, current, plan)
+        else
+          _finishedCard(sp),
 
         // What's coming, so a missed day is never a pile of empty boxes.
         if (upcoming.isNotEmpty) _sectionLabel('COMING UP'),
         for (final i in upcoming)
-          _entryRow(label: 'Reading ${i + 1}', dayIndex: i, day: plan.days[i]),
+          _entryRow(
+              label: 'Reading ${i + 1}',
+              dayIndex: i,
+              day: plan.days[i],
+              plan: plan),
 
         if (done > 0) _sectionLabel('ALREADY READ'),
         for (var i = done - 1; i >= 0 && i >= done - 4; i--)
@@ -2189,16 +2313,14 @@ class _PlansScreenState extends State<PlansScreen> {
               label: 'Reading ${i + 1}',
               dayIndex: i,
               day: plan.days[i],
+              plan: plan,
               muted: true),
 
         const SizedBox(height: 20),
         Center(
           child: TextButton(
-            onPressed: () => setState(() {
-              PlanStore.clearPlan();
-              _active = null;
-            }),
-            child: Text('Choose a different plan',
+            onPressed: () => setState(() => _detailId = null),
+            child: Text('Back to my plans',
                 style: GoogleFonts.crimsonPro(
                     fontSize: 15, color: kInk, fontWeight: FontWeight.w600)),
           ),
@@ -2209,7 +2331,7 @@ class _PlansScreenState extends State<PlansScreen> {
     );
   }
 
-  Widget _currentCard(int index, PlanDay day) => Container(
+  Widget _currentCard(int index, PlanDay day, ReadingPlan plan) => Container(
         margin: const EdgeInsets.fromLTRB(20, 18, 20, 4),
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
@@ -2228,8 +2350,8 @@ class _PlansScreenState extends State<PlansScreen> {
             const SizedBox(height: 6),
             for (var pi = 0; pi < day.passages.length; pi++)
               InkWell(
-                onTap: () => Navigator.of(context)
-                    .pop(PlanSession(_active!, index, pi)),
+                onTap: () =>
+                    Navigator.of(context).pop(PlanSession(plan, index, pi)),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 9),
                   child: Row(
@@ -2294,7 +2416,7 @@ class _PlansScreenState extends State<PlansScreen> {
         ),
       );
 
-  Widget _finishedCard() => Container(
+  Widget _finishedCard(SavedPlan sp) => Container(
         margin: const EdgeInsets.fromLTRB(20, 18, 20, 4),
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
@@ -2310,7 +2432,7 @@ class _PlansScreenState extends State<PlansScreen> {
             Text('Take a moment — then read on, or start another plan.',
                 style: GoogleFonts.crimsonPro(
                     fontSize: 15, color: kMuted, height: 1.4)),
-            if (PlanStore.value.completedCount > 0)
+            if (sp.completedCount > 0)
               Align(
                 alignment: Alignment.centerLeft,
                 child: TextButton(
@@ -2328,11 +2450,12 @@ class _PlansScreenState extends State<PlansScreen> {
           {required String label,
           required int dayIndex,
           required PlanDay day,
+          required ReadingPlan plan,
           bool muted = false}) =>
       InkWell(
         onTap: day.passages.isEmpty
             ? null
-            : () => Navigator.of(context).pop(PlanSession(_active!, dayIndex, 0)),
+            : () => Navigator.of(context).pop(PlanSession(plan, dayIndex, 0)),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
           child: Row(
@@ -2375,90 +2498,233 @@ class _PlansScreenState extends State<PlansScreen> {
         ),
       );
 
-  // --- Length chooser ------------------------------------------------------
+}
 
-  Future<int?> _chooseLength(PlanInfo info) {
-    var days = info.defaultDays;
-    return showModalBottomSheet<int>(
-      context: context,
+/// Build a reading plan by choosing what you want from it — chapters per day,
+/// cross-referenced or straight through, a daily Psalm, New Testament only,
+/// canonical or chronological order — and read a live narrative + day-1 preview
+/// as you adjust. "Generate & start" hands the config back to PlansScreen.
+class PlanBuilderScreen extends StatefulWidget {
+  const PlanBuilderScreen({super.key});
+
+  @override
+  State<PlanBuilderScreen> createState() => _PlanBuilderScreenState();
+}
+
+class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
+  PlanConfig _c = const PlanConfig();
+  XrefGraph? _graph;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      _graph = await loadXrefGraph();
+    } catch (_) {
+      // Preview falls back to no cross-referenced NT passage.
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _set(PlanConfig next) => setState(() => _c = next);
+
+  // Day-1 passages for the preview. Needs the graph for the NT pairing.
+  PlanDay? get _firstDay {
+    final g = _graph;
+    if (g == null) return null;
+    final days = generatePlan(g, _c, id: 'preview').days;
+    return days.isEmpty ? null : days.first;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final days = planLength(_c);
+    final ntOnly = _c.newTestamentOnly;
+    return Scaffold(
       backgroundColor: kPaper,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
-      ),
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) {
-          void setDays(int d) =>
-              setSheet(() => days = d.clamp(7, info.maxDays).toInt());
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+      appBar: AppBar(title: Text('Design a plan', style: kTitleStyle(20))),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(0, 6, 0, 28),
+        children: [
+          // Narrative + duration.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(_c.title, style: kTitleStyle(22, weight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                Text('${durationLabel(days)} · $days readings',
+                    style:
+                        GoogleFonts.crimsonPro(fontSize: 14, color: kInk)),
+                const SizedBox(height: 12),
+                Text(narrativeFor(_c),
+                    style: GoogleFonts.crimsonPro(
+                        fontSize: 16, color: kMuted, height: 1.45)),
+              ],
+            ),
+          ),
+          _dayOnePreview(),
+
+          _builderLabel('CHAPTERS PER DAY'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                _stepBtn(Icons.remove, () {
+                  if (_c.chaptersPerDay > 1) {
+                    _set(_c.copyWith(chaptersPerDay: _c.chaptersPerDay - 1));
+                  }
+                }),
+                Expanded(
+                  child: Center(
+                    child: Text('${_c.chaptersPerDay}',
+                        style: kTitleStyle(26, weight: FontWeight.w700)),
+                  ),
+                ),
+                _stepBtn(Icons.add, () {
+                  if (_c.chaptersPerDay < 12) {
+                    _set(_c.copyWith(chaptersPerDay: _c.chaptersPerDay + 1));
+                  }
+                }),
+              ],
+            ),
+          ),
+
+          _builderLabel('WHAT TO INCLUDE'),
+          _switchTile(
+            title: 'Read only the New Testament',
+            subtitle: 'Skip the Old Testament entirely',
+            value: ntOnly,
+            onChanged: (v) => _set(_c.copyWith(newTestamentOnly: v)),
+          ),
+          _switchTile(
+            title: 'A Psalm every day',
+            subtitle: 'Adds one Psalm to each day (cycling all 150)',
+            value: _c.dailyPsalm,
+            onChanged: (v) => _set(_c.copyWith(dailyPsalm: v)),
+          ),
+          _switchTile(
+            title: 'Cross-referenced',
+            subtitle: ntOnly
+                ? 'Not applicable when reading only the New Testament'
+                : 'Pair each day with a linked New Testament passage. Off = '
+                    'read straight through, back to back.',
+            value: _c.crossReferenced && !ntOnly,
+            onChanged:
+                ntOnly ? null : (v) => _set(_c.copyWith(crossReferenced: v)),
+          ),
+
+          if (!ntOnly) ...[
+            _builderLabel('OLD TESTAMENT ORDER'),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
                 children: [
-                  Text('HOW MANY DAYS?',
-                      style: GoogleFonts.crimsonPro(
-                          fontSize: 12,
-                          letterSpacing: 3,
-                          fontWeight: FontWeight.w600,
-                          color: kMuted)),
-                  const SizedBox(height: 4),
-                  Text('${info.title} · about $days readings',
-                      style:
-                          GoogleFonts.crimsonPro(fontSize: 14, color: kMuted)),
-                  const SizedBox(height: 16),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: [
-                      for (final p in info.presets)
-                        _presetChip('$p', selected: days == p,
-                            onTap: () => setDays(p)),
-                    ],
-                  ),
-                  const SizedBox(height: 18),
-                  Row(
-                    children: [
-                      _stepButton(Icons.remove, () => setDays(days - 5)),
-                      Expanded(
-                        child: Center(
-                          child: Text('$days days',
-                              style: kTitleStyle(24, weight: FontWeight.w600)),
-                        ),
-                      ),
-                      _stepButton(Icons.add, () => setDays(days + 5)),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: () => Navigator.of(context).pop(days),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: kInk,
-                        foregroundColor: kPaper,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8)),
-                      ),
-                      child: const Text('Start this plan'),
-                    ),
-                  ),
+                  _orderChip('In order', PlanOrdering.canonical),
+                  const SizedBox(width: 10),
+                  _orderChip('Chronological', PlanOrdering.chronological),
                 ],
               ),
             ),
-          );
-        },
+          ],
+
+          const SizedBox(height: 26),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => Navigator.of(context).pop(_c),
+                style: FilledButton.styleFrom(
+                  backgroundColor: kInk,
+                  foregroundColor: kPaper,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('Generate & start'),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _presetChip(String label,
-          {required bool selected, required VoidCallback onTap}) =>
-      InkWell(
-        onTap: onTap,
+  Widget _dayOnePreview() {
+    final day = _firstDay;
+    if (day == null) return const SizedBox(height: 8);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(color: kDisabled),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('DAY 1',
+              style: GoogleFonts.crimsonPro(
+                  fontSize: 11,
+                  letterSpacing: 2.5,
+                  fontWeight: FontWeight.w600,
+                  color: kMuted)),
+          const SizedBox(height: 6),
+          Text(
+            day.passages.map((r) => '${r.book} ${r.chapter}').join('   ·   '),
+            style: kTitleStyle(18, weight: FontWeight.w500),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _builderLabel(String t) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 26, 24, 10),
+        child: Text(t,
+            style: GoogleFonts.crimsonPro(
+                fontSize: 12,
+                letterSpacing: 3,
+                fontWeight: FontWeight.w600,
+                color: kMuted)),
+      );
+
+  Widget _switchTile({
+    required String title,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool>? onChanged,
+  }) {
+    final disabled = onChanged == null;
+    return SwitchListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+      activeThumbColor: kInk,
+      value: value,
+      onChanged: onChanged,
+      title: Text(title,
+          style: kTitleStyle(17, weight: FontWeight.w500)
+              .copyWith(color: disabled ? kMuted : kInk)),
+      subtitle: Text(subtitle,
+          style: GoogleFonts.crimsonPro(
+              fontSize: 13, color: kMuted, height: 1.3)),
+    );
+  }
+
+  Widget _orderChip(String label, PlanOrdering order) {
+    final selected = _c.ordering == order;
+    return Expanded(
+      child: InkWell(
+        onTap: () => _set(_c.copyWith(ordering: order)),
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          alignment: Alignment.center,
           decoration: BoxDecoration(
             color: selected ? kInk : kPaper,
             border: Border.all(color: kInk),
@@ -2466,13 +2732,15 @@ class _PlansScreenState extends State<PlansScreen> {
           ),
           child: Text(label,
               style: GoogleFonts.crimsonPro(
-                  fontSize: 16,
+                  fontSize: 15,
                   fontWeight: FontWeight.w600,
                   color: selected ? kPaper : kInk)),
         ),
-      );
+      ),
+    );
+  }
 
-  Widget _stepButton(IconData icon, VoidCallback onTap) => InkWell(
+  Widget _stepBtn(IconData icon, VoidCallback onTap) => InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: Container(
