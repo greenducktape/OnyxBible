@@ -405,9 +405,14 @@ ReadingPlan generatePlan(XrefGraph graph, PlanConfig config,
   final totalDays = main.isEmpty ? 0 : (main.length / cpd).ceil();
 
   final pairing = config.crossReferenced && !config.newTestamentOnly;
-  // Remaining (unscheduled) NT chapters, consumed greedily by affinity.
-  final ntPool = pairing ? chaptersOfTestament(oldTestament: false) : <BibleRef>[];
-  final ntTotal = ntPool.length;
+  final ntAll = chaptersOfTestament(oldTestament: false);
+  // A New Testament passage EVERY day (the user's "Bible points to Jesus"
+  // pairing). Enough per day to get through the NT across the whole plan; for
+  // plans longer than the 260 NT chapters the pool simply cycles so there is
+  // always something linked to read.
+  final ntPerDay =
+      (pairing && totalDays > 0) ? math.max(1, (ntAll.length / totalDays).ceil()) : 0;
+  var ntPool = <BibleRef>[];
   const window = 24;
 
   final days = <PlanDay>[];
@@ -418,29 +423,25 @@ ReadingPlan generatePlan(XrefGraph graph, PlanConfig config,
     final passages = <BibleRef>[...dayMain];
     var votes = 0;
 
-    if (pairing && ntPool.isNotEmpty) {
-      // Spread the NT evenly across the plan; usually ~1 chapter/day. Each day
-      // takes the most strongly cross-referenced NT chapter from a near-front
+    for (var k = 0; k < ntPerDay; k++) {
+      if (ntPool.isEmpty) ntPool = List<BibleRef>.of(ntAll); // cycle if needed
+      // Take the most strongly cross-referenced NT chapter from a near-front
       // window of what's left, so OT and NT stay linked by meaning.
-      final ntCount =
-          ((d + 1) * ntTotal) ~/ totalDays - (d * ntTotal) ~/ totalDays;
-      for (var k = 0; k < ntCount && ntPool.isNotEmpty; k++) {
-        final lim = math.min(window, ntPool.length);
-        var best = 0;
-        var bestW = -1;
-        for (var j = 0; j < lim; j++) {
-          var w = 0;
-          for (final o in dayMain) {
-            w += graph.affinity(o, ntPool[j]);
-          }
-          if (w > bestW) {
-            bestW = w;
-            best = j;
-          }
+      final lim = math.min(window, ntPool.length);
+      var best = 0;
+      var bestW = -1;
+      for (var j = 0; j < lim; j++) {
+        var w = 0;
+        for (final o in dayMain) {
+          w += graph.affinity(o, ntPool[j]);
         }
-        if (bestW > 0) votes += bestW;
-        passages.add(ntPool.removeAt(best));
+        if (w > bestW) {
+          bestW = w;
+          best = j;
+        }
       }
+      if (bestW > 0) votes += bestW;
+      passages.add(ntPool.removeAt(best));
     }
 
     if (config.dailyPsalm) {
