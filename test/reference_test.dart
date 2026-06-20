@@ -28,4 +28,21 @@ void main() {
     expect(parseReference('John 999'), isNull); // John has 21 chapters
     expect(parseReference(''), isNull);
   });
+
+  test('BibleRef.toString renders chapter / single verse / verse range', () {
+    expect(const BibleRef('Genesis', 1).toString(), 'Genesis 1');
+    expect(const BibleRef('John', 3, 16).toString(), 'John 3:16');
+    expect(const BibleRef('Hebrews', 11, 1, 3).toString(), 'Hebrews 11:1-3');
+    // endVerse equal to verse collapses to the single-verse form.
+    expect(const BibleRef('John', 3, 16, 16).toString(), 'John 3:16');
+  });
+
+  test('BibleRef equality and hashCode include endVerse', () {
+    const a = BibleRef('Hebrews', 11, 1, 3);
+    const b = BibleRef('Hebrews', 11, 1, 3);
+    const c = BibleRef('Hebrews', 11, 1, 4);
+    expect(a, b);
+    expect(a.hashCode, b.hashCode);
+    expect(a == c, isFalse);
+  });
 }

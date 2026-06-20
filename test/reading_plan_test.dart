@@ -118,6 +118,55 @@ void main() {
       expect(day1.passages.any((r) => !_isOt(r)), isTrue);
     });
 
+    test('NT echo dataset, when present, beats raw chapter affinity', () {
+      // Synthetic data: Genesis 1's strongest *chapter* link is Matthew 1, but
+      // the echoes asset says Hebrews 11:1-3 is the densest verse range. The
+      // generator should prefer the echo (a snippet) on day 1.
+      final g = XrefGraph.fromJson({
+        'Genesis 1': [
+          ['Matthew 1', 50],
+          ['Hebrews 11', 30],
+        ],
+        'Matthew 1': [['Genesis 1', 50]],
+        'Hebrews 11': [['Genesis 1', 30]],
+      });
+      final e = OtNtEchoes.fromJson({
+        'Genesis 1': [
+          {'book': 'Hebrews', 'chapter': 11, 'from': 1, 'to': 3, 'votes': 248},
+        ],
+      });
+      final plan = generatePlan(g, const PlanConfig(chaptersPerDay: 1),
+          echoes: e);
+      final day1 = plan.days.first;
+      expect(day1.passages.first, const BibleRef('Genesis', 1));
+      // Verse-range echo present and points at Hebrews 11:1-3, NOT Matthew 1.
+      final ntPick = day1.passages.firstWhere((r) => !_isOt(r));
+      expect(ntPick.book, 'Hebrews');
+      expect(ntPick.chapter, 11);
+      expect(ntPick.verse, 1);
+      expect(ntPick.endVerse, 3);
+    });
+
+    test('NT picks across the plan do not stagnate on one chapter', () {
+      // Without echoes, the new picker should still spread the NT pairings
+      // when affinity is roughly even — the recent-use penalty kicks in.
+      final g = XrefGraph.fromJson({
+        for (var c = 1; c <= 5; c++) 'Genesis $c': [
+          // Three NT chapters with similar weights — recent-use penalty should
+          // rotate them rather than picking the same one every day.
+          ['Matthew 1', 100], ['Mark 1', 95], ['Luke 1', 90],
+        ],
+      });
+      final plan = generatePlan(g, const PlanConfig(chaptersPerDay: 1));
+      final ntPicks = <String>[];
+      for (var i = 0; i < 5; i++) {
+        final r = plan.days[i].passages.firstWhere((p) => !_isOt(p));
+        ntPicks.add('${r.book} ${r.chapter}');
+      }
+      // Not all 5 days should be the same NT chapter.
+      expect(ntPicks.toSet().length, greaterThan(1));
+    });
+
     test('daily Psalm pulls Psalms out of the main track and adds one a day',
         () {
       final plan = generatePlan(

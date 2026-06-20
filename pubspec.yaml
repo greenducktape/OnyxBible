@@ -74,6 +74,11 @@ flutter:
     # Chapter cross-reference graph for reading plans (built from the
     # OpenBible.info dataset, CC-BY 4.0; see tool/build_xref.py).
     - assets/data/xref_chapters.json
+    # OT -> NT verse-range echoes: each OT chapter mapped to the top New
+    # Testament snippets whose cross-references echo it. Drives the Emmaus-
+    # style cross-referenced plan (a short NT passage every day, not a
+    # whole chapter). Same source / attribution as xref_chapters.json.
+    - assets/data/ot_nt_echoes.json
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

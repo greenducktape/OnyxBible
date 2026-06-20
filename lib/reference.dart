@@ -6,23 +6,28 @@ import 'books.dart';
 class BibleRef {
   final String book; // canonical name from books.dart
   final int chapter;
-  final int? verse;
+  final int? verse; // start verse of a passage (null = whole chapter)
+  final int? endVerse; // inclusive end verse of a range (null = single verse)
 
-  const BibleRef(this.book, this.chapter, [this.verse]);
+  const BibleRef(this.book, this.chapter, [this.verse, this.endVerse]);
 
   @override
   bool operator ==(Object other) =>
       other is BibleRef &&
       other.book == book &&
       other.chapter == chapter &&
-      other.verse == verse;
+      other.verse == verse &&
+      other.endVerse == endVerse;
 
   @override
-  int get hashCode => Object.hash(book, chapter, verse);
+  int get hashCode => Object.hash(book, chapter, verse, endVerse);
 
   @override
-  String toString() =>
-      verse == null ? '$book $chapter' : '$book $chapter:$verse';
+  String toString() {
+    if (verse == null) return '$book $chapter';
+    if (endVerse == null || endVerse == verse) return '$book $chapter:$verse';
+    return '$book $chapter:$verse-$endVerse';
+  }
 }
 
 String _norm(String s) => s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');

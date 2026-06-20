@@ -1957,6 +1957,7 @@ class PlansScreen extends StatefulWidget {
 
 class _PlansScreenState extends State<PlansScreen> {
   XrefGraph? _graph;
+  OtNtEchoes? _echoes;
   bool _loading = true;
   String? _detailId; // when set, show this saved plan's progress
 
@@ -1971,6 +1972,11 @@ class _PlansScreenState extends State<PlansScreen> {
       _graph = await loadXrefGraph();
     } catch (_) {
       // Leave _graph null; the library still lists plans, just without detail.
+    }
+    try {
+      _echoes = await loadOtNtEchoes();
+    } catch (_) {
+      // Echoes optional: falls back to chapter-level affinity from _graph.
     }
     if (mounted) setState(() => _loading = false);
   }
@@ -2173,7 +2179,8 @@ class _PlansScreenState extends State<PlansScreen> {
         ),
       );
     }
-    return _progressView(sp, generatePlan(g, sp.config, id: sp.id));
+    return _progressView(
+        sp, generatePlan(g, sp.config, id: sp.id, echoes: _echoes));
   }
 
   // --- Active plan: self-paced progress -----------------------------------
@@ -2456,6 +2463,7 @@ class PlanBuilderScreen extends StatefulWidget {
 class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
   PlanConfig _c = const PlanConfig();
   XrefGraph? _graph;
+  OtNtEchoes? _echoes;
 
   @override
   void initState() {
@@ -2469,6 +2477,11 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
     } catch (_) {
       // Preview falls back to no cross-referenced NT passage.
     }
+    try {
+      _echoes = await loadOtNtEchoes();
+    } catch (_) {
+      // Echoes optional; chapter-level affinity from _graph is the fallback.
+    }
     if (mounted) setState(() {});
   }
 
@@ -2478,7 +2491,8 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
   PlanDay? get _firstDay {
     final g = _graph;
     if (g == null) return null;
-    final days = generatePlan(g, _c, id: 'preview').days;
+    final days =
+        generatePlan(g, _c, id: 'preview', echoes: _echoes).days;
     return days.isEmpty ? null : days.first;
   }
 

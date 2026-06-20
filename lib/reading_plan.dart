@@ -55,6 +55,51 @@ class XrefGraph {
   }
 }
 
+/// Verse-range New Testament "echoes" of each Old Testament chapter, built at
+/// load time from assets/data/ot_nt_echoes.json (see tool/build_xref.py).
+/// Each OT chapter maps to a list of candidate NT passages, strongest-first,
+/// each carrying a contiguous verse range (a snippet, not the whole chapter)
+/// and the summed cross-reference vote weight that linked it.
+class OtNtEchoes {
+  final Map<String, List<BibleRef>> _byOtChapter;
+  final Map<String, List<int>> _votes;
+
+  const OtNtEchoes(this._byOtChapter, this._votes);
+
+  factory OtNtEchoes.fromJson(Map<String, dynamic> json) {
+    final refs = <String, List<BibleRef>>{};
+    final votes = <String, List<int>>{};
+    json.forEach((key, value) {
+      final list = (value as List).cast<Map>();
+      refs[key] = [
+        for (final e in list)
+          BibleRef(
+              e['book'] as String,
+              (e['chapter'] as num).toInt(),
+              (e['from'] as num).toInt(),
+              (e['to'] as num).toInt()),
+      ];
+      votes[key] = [for (final e in list) (e['votes'] as num).toInt()];
+    });
+    return OtNtEchoes(refs, votes);
+  }
+
+  /// NT echo candidates for an OT chapter, strongest-first. Empty if unknown.
+  List<BibleRef> candidatesFor(BibleRef otChapter) =>
+      _byOtChapter[XrefGraph.keyOf(otChapter)] ?? const [];
+
+  /// Vote weight of [candidate] when it appears as an echo of [otChapter], or 0.
+  int votesFor(BibleRef otChapter, BibleRef candidate) {
+    final key = XrefGraph.keyOf(otChapter);
+    final cands = _byOtChapter[key];
+    if (cands == null) return 0;
+    for (var i = 0; i < cands.length; i++) {
+      if (cands[i] == candidate) return _votes[key]![i];
+    }
+    return 0;
+  }
+}
+
 /// One day of reading: a few chapters, plus the strength of the OT<->NT
 /// cross-reference pairing chosen for the day (0 when no strong link existed).
 class PlanDay {
@@ -398,22 +443,33 @@ int planLength(PlanConfig config) {
 
 /// Build the concrete plan for [config]. [id] becomes the plan's id (so a live
 /// session can be matched back to its saved-plan progress). Deterministic.
+///
+/// For cross-referenced plans the day's OT chapter(s) come from the main track
+/// in order; the NT pairing is the passage whose cross-references most strongly
+/// echo that day's OT.
+///
+/// When [echoes] is provided (the bundled ot_nt_echoes.json), each NT pairing is
+/// a short verse range — a snippet like "Hebrews 11:1-3" — chosen because
+/// scripture itself most densely links that range to the day's OT. NT passages
+/// may repeat across the plan: the NT is the lens on the OT, not a parallel
+/// track to cover. A recent-use penalty stops any one snippet from running
+/// many days in a row when a runner-up is close.
+///
+/// Without [echoes] the picker falls back to whole-NT-chapter affinity from
+/// [graph] (same recent-use diversification) — still better than the old
+/// front-window pool, but at chapter granularity.
 ReadingPlan generatePlan(XrefGraph graph, PlanConfig config,
-    {String id = 'custom'}) {
+    {String id = 'custom', OtNtEchoes? echoes}) {
   final cpd = config.chaptersPerDay.clamp(1, 20).toInt();
   final main = _mainTrack(config);
   final totalDays = main.isEmpty ? 0 : (main.length / cpd).ceil();
 
   final pairing = config.crossReferenced && !config.newTestamentOnly;
   final ntAll = chaptersOfTestament(oldTestament: false);
-  // A New Testament passage EVERY day (the user's "Bible points to Jesus"
-  // pairing). Enough per day to get through the NT across the whole plan; for
-  // plans longer than the 260 NT chapters the pool simply cycles so there is
-  // always something linked to read.
-  final ntPerDay =
-      (pairing && totalDays > 0) ? math.max(1, (ntAll.length / totalDays).ceil()) : 0;
-  var ntPool = <BibleRef>[];
-  const window = 24;
+  // Days back at which a recent NT echo's score is halved (then quartered, etc.).
+  // 14 felt long; 8 is enough to break a streak yet still let a strong link win.
+  const recentPenaltyWindow = 8;
+  final lastUsedDay = <BibleRef, int>{};
 
   final days = <PlanDay>[];
   for (var d = 0; d < totalDays; d++) {
@@ -423,25 +479,65 @@ ReadingPlan generatePlan(XrefGraph graph, PlanConfig config,
     final passages = <BibleRef>[...dayMain];
     var votes = 0;
 
-    for (var k = 0; k < ntPerDay; k++) {
-      if (ntPool.isEmpty) ntPool = List<BibleRef>.of(ntAll); // cycle if needed
-      // Take the most strongly cross-referenced NT chapter from a near-front
-      // window of what's left, so OT and NT stay linked by meaning.
-      final lim = math.min(window, ntPool.length);
-      var best = 0;
-      var bestW = -1;
-      for (var j = 0; j < lim; j++) {
-        var w = 0;
+    if (pairing) {
+      // Build a candidate set: when verse-range echoes are available, use them
+      // (snippet feel); otherwise fall back to whole-NT-chapter affinity.
+      // In both cases a recent-use penalty halves the score the closer it was
+      // used, so the same favourite can't dominate the first week.
+      final candidates = <BibleRef>[];
+      final rawVotes = <int>[];
+      if (echoes != null) {
         for (final o in dayMain) {
-          w += graph.affinity(o, ntPool[j]);
-        }
-        if (w > bestW) {
-          bestW = w;
-          best = j;
+          for (final c in echoes.candidatesFor(o)) {
+            candidates.add(c);
+            rawVotes.add(echoes.votesFor(o, c));
+          }
         }
       }
-      if (bestW > 0) votes += bestW;
-      passages.add(ntPool.removeAt(best));
+      if (candidates.isEmpty) {
+        for (final n in ntAll) {
+          var w = 0;
+          for (final o in dayMain) {
+            w += graph.affinity(o, n);
+          }
+          if (w > 0) {
+            candidates.add(n);
+            rawVotes.add(w);
+          }
+        }
+      }
+
+      BibleRef? bestRef;
+      double bestScore = -1;
+      var bestRawVotes = 0;
+      for (var i = 0; i < candidates.length; i++) {
+        final ref = candidates[i];
+        var score = rawVotes[i].toDouble();
+        // Diversification: key the recent-use map by chapter so two ranges in
+        // the same chapter still count as one repeat (avoids Hebrews 11:1-3
+        // immediately followed by Hebrews 11:4-9).
+        final chapterKey = BibleRef(ref.book, ref.chapter);
+        final last = lastUsedDay[chapterKey];
+        if (last != null) {
+          final gap = d - last;
+          if (gap < recentPenaltyWindow) {
+            score *= math.pow(0.5, recentPenaltyWindow - gap).toDouble();
+          }
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestRef = ref;
+          bestRawVotes = rawVotes[i];
+        }
+      }
+      if (bestRef == null) {
+        // No links at all anywhere — fall back to canonical NT (cycles).
+        bestRef = ntAll[d % ntAll.length];
+        bestRawVotes = 0;
+      }
+      lastUsedDay[BibleRef(bestRef.book, bestRef.chapter)] = d;
+      votes = bestRawVotes;
+      passages.add(bestRef);
     }
 
     if (config.dailyPsalm) {
@@ -523,8 +619,8 @@ String narrativeFor(PlanConfig config) {
     b.write(', with the Psalms and prophets intermingled as a Psalm joins '
         'each day');
   }
-  b.write('. Every day also includes a New Testament passage chosen because '
-      "Scripture itself links it to the day's reading — so you keep seeing how "
-      'the Bible is one story pointing to Jesus.');
+  b.write('. Every day also includes a short New Testament passage chosen '
+      "because Scripture itself echoes the day's Old Testament reading — so "
+      'you keep seeing how the Bible is one story pointing to Jesus.');
   return b.toString();
 }

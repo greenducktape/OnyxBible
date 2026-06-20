@@ -166,6 +166,12 @@ Future<XrefGraph> loadXrefGraph() async {
   return XrefGraph.fromJson(json.decode(raw) as Map<String, dynamic>);
 }
 
+/// Loads the bundled OT->NT verse-range echoes used by cross-referenced plans.
+Future<OtNtEchoes> loadOtNtEchoes() async {
+  final raw = await rootBundle.loadString('assets/data/ot_nt_echoes.json');
+  return OtNtEchoes.fromJson(json.decode(raw) as Map<String, dynamic>);
+}
+
 class SearchHit {
   final String book;
   final int chapter;
