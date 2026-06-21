@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'atomic_file.dart';
 import 'reading_plan.dart';
 
 /// One saved reading plan and its self-paced progress. The plan's days are NOT
@@ -114,17 +115,15 @@ class PlanStore {
     if (_loaded) return;
     try {
       final f = await _file();
-      if (await f.exists()) {
-        final s = await f.readAsString();
-        if (s.isNotEmpty) {
-          final j = json.decode(s) as Map<String, dynamic>;
-          _plans = [
-            for (final e in (j['plans'] as List? ?? const []))
-              SavedPlan.fromJson((e as Map).cast<String, dynamic>()),
-          ];
-          _activeId = j['activeId'] as String?;
-        }
-      } else {
+      final r = await readJsonResilient(f);
+      if (r.data is Map<String, dynamic>) {
+        final j = r.data as Map<String, dynamic>;
+        _plans = [
+          for (final e in (j['plans'] as List? ?? const []))
+            SavedPlan.fromJson((e as Map).cast<String, dynamic>()),
+        ];
+        _activeId = j['activeId'] as String?;
+      } else if (!await f.exists()) {
         await _migrateLegacy();
       }
     } catch (e) {
@@ -200,12 +199,11 @@ class PlanStore {
 
   static Future<void> _flush() async {
     try {
-      final f = await _file();
-      await f.writeAsString(json.encode({
+      await writeJsonAtomic(await _file(), {
         'schema': 1,
         'activeId': _activeId,
         'plans': [for (final p in _plans) p.toJson()],
-      }));
+      });
     } catch (e) {
       debugPrint('Error saving plans: $e');
     }

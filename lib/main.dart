@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
@@ -10,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:onyxsdk_pen/onyxsdk_pen.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'atomic_file.dart';
 import 'books.dart';
 import 'library_store.dart';
 import 'plan_store.dart';
@@ -25,17 +25,27 @@ export 'verse.dart';
 export 'scripture.dart';
 export 'settings_store.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await OnyxSdkPenArea.init();
-  await SettingsStore.init();
-  await PlanStore.init();
-  await LibraryStore.init();
-  await _bootstrapLibrary();
-  if (!LibraryStore.isEmpty) {
-    await DrawingStore.useBible(LibraryStore.active.id);
-  }
-  runApp(const BooxBibleApp());
+void main() {
+  // Surface framework + uncaught errors to the log instead of a silent
+  // dark screen. No network/telemetry — debugPrint only.
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('FlutterError: ${details.exceptionAsString()}');
+  };
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    await OnyxSdkPenArea.init();
+    await SettingsStore.init();
+    await PlanStore.init();
+    await LibraryStore.init();
+    await _bootstrapLibrary();
+    if (!LibraryStore.isEmpty) {
+      await DrawingStore.useBible(LibraryStore.active.id);
+    }
+    runApp(const BooxBibleApp());
+  }, (error, stack) {
+    debugPrint('Uncaught zone error: $error\n$stack');
+  });
 }
 
 /// Migrates existing users (who have a settings file) into a single "default"
@@ -242,16 +252,14 @@ class DrawingStore {
         final legacy = await _legacyFile();
         if (await legacy.exists()) file = legacy;
       }
-      if (await file.exists()) {
-        final content = await file.readAsString();
-        if (content.isNotEmpty) {
-          final Map<String, dynamic> data = json.decode(content);
-          _notes.addAll(data.map((key, value) => MapEntry(
-              key,
-              (value as List)
-                  .map((s) => Stroke.fromJson(s as Map<String, dynamic>))
-                  .toList())));
-        }
+      final r = await readJsonResilient(file);
+      if (r.data is Map<String, dynamic>) {
+        final data = r.data as Map<String, dynamic>;
+        _notes.addAll(data.map((key, value) => MapEntry(
+            key,
+            (value as List)
+                .map((s) => Stroke.fromJson(s as Map<String, dynamic>))
+                .toList())));
       }
     } catch (e) {
       debugPrint('Error loading notes: $e');
@@ -283,6 +291,14 @@ class DrawingStore {
     _saveDebouncer = Timer(const Duration(milliseconds: 800), _save);
   }
 
+  /// Cancel any pending debounce and write the notes now. Called when a stroke
+  /// is lifted (so committed ink is durable immediately, not 800ms later) and
+  /// when the app is backgrounded.
+  static Future<void> flushNow() async {
+    _saveDebouncer?.cancel();
+    await _save();
+  }
+
   static Future<void> _save() async {
     final id = _bibleId;
     if (id == null) return;
@@ -290,7 +306,7 @@ class DrawingStore {
       final file = await _noteFile(id);
       final data = _notes.map(
           (key, value) => MapEntry(key, value.map((s) => s.toJson()).toList()));
-      await file.writeAsString(json.encode(data));
+      await writeJsonAtomic(file, data);
     } catch (e) {
       debugPrint('Error saving notes: $e');
     }
@@ -322,10 +338,25 @@ class DrawingStore {
 // does its own lightweight caching.
 
 class PageCache {
+  // Insertion-ordered, so the oldest key is first — a simple LRU: touching a key
+  // re-inserts it at the end, and we evict from the front past the cap. Bounded
+  // so long reading sessions on 2–4 GB Boox devices don't grow without limit.
   static final Map<String, List<List<Verse>>> _pages = {};
+  static const int _maxEntries = 64;
 
-  static List<List<Verse>>? get(String key) => _pages[key];
-  static void put(String key, List<List<Verse>> pages) => _pages[key] = pages;
+  static List<List<Verse>>? get(String key) {
+    final v = _pages.remove(key);
+    if (v != null) _pages[key] = v; // mark most-recently-used
+    return v;
+  }
+
+  static void put(String key, List<List<Verse>> pages) {
+    _pages.remove(key);
+    _pages[key] = pages;
+    while (_pages.length > _maxEntries) {
+      _pages.remove(_pages.keys.first); // evict least-recently-used
+    }
+  }
 }
 
 // --- Undo / redo ----------------------------------------------------------
@@ -647,7 +678,8 @@ class BibleReaderScreen extends StatefulWidget {
   State<BibleReaderScreen> createState() => _BibleReaderScreenState();
 }
 
-class _BibleReaderScreenState extends State<BibleReaderScreen> {
+class _BibleReaderScreenState extends State<BibleReaderScreen>
+    with WidgetsBindingObserver {
   // Initialized from persisted settings in initState (resume last position).
   late String _book;
   late int _chapter;
@@ -705,10 +737,22 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _applyActiveBible();
     _widthIndex =
         SettingsStore.value.widthIndex.clamp(0, _widths.length - 1).toInt();
     _loadChapter();
+    // If any store had to recover from a .bak on load, tell the user once.
+    if (gDataRecovered) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        gDataRecovered = false;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Some saved data was restored from a backup copy.'),
+          duration: Duration(seconds: 4),
+        ));
+      });
+    }
   }
 
   // Adopt the active printed Bible's locked layout + reading position.
@@ -720,7 +764,19 @@ class _BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Backgrounding/closing: make any pending notes + settings durable now.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      unawaited(DrawingStore.flushNow());
+      unawaited(SettingsStore.flushNow());
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pageController.dispose();
     super.dispose();
   }
@@ -1611,11 +1667,13 @@ class _PageInkState extends State<PageInk> {
   }
 
   void _onUp(PointerUpEvent e) {
+    var changed = false;
     if (_active != null) {
       if (_active!.points.length > 1) {
         _strokes.add(_active!);
         DrawingStore.setStrokes(widget.pageKey, _strokes);
         kUndo.recordAdd(widget.pageKey, _active!);
+        changed = true;
       }
       _active = null;
       // The new stroke now lives in the committed layer; clear the active one.
@@ -1625,7 +1683,11 @@ class _PageInkState extends State<PageInk> {
     if (_erasedThisGesture.isNotEmpty) {
       kUndo.recordErase(widget.pageKey, List<Stroke>.of(_erasedThisGesture));
       _erasedThisGesture.clear();
+      changed = true;
     }
+    // Lifting the pen makes the change durable now (atomic write), so a crash
+    // or power loss right after writing can't drop the just-finished mark.
+    if (changed) unawaited(DrawingStore.flushNow());
   }
 
   void _eraseAt(Offset p) {

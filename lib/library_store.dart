@@ -1,10 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'atomic_file.dart';
 import 'settings_store.dart';
 
 /// A single "printed" Bible — a fixed artifact. The layout choices are made once
@@ -124,17 +124,14 @@ class LibraryStore {
   static Future<void> init() async {
     if (_loaded) return;
     try {
-      final f = await _file();
-      if (await f.exists()) {
-        final s = await f.readAsString();
-        if (s.isNotEmpty) {
-          final j = json.decode(s) as Map<String, dynamic>;
-          _bibles = [
-            for (final e in (j['bibles'] as List? ?? const []))
-              BibleConfig.fromJson(e as Map<String, dynamic>)
-          ];
-          _activeId = j['activeId'] as String?;
-        }
+      final r = await readJsonResilient(await _file());
+      if (r.data is Map<String, dynamic>) {
+        final j = r.data as Map<String, dynamic>;
+        _bibles = [
+          for (final e in (j['bibles'] as List? ?? const []))
+            BibleConfig.fromJson(e as Map<String, dynamic>)
+        ];
+        _activeId = j['activeId'] as String?;
       }
     } catch (e) {
       debugPrint('Error loading library: $e');
@@ -186,12 +183,11 @@ class LibraryStore {
 
   static Future<void> _flush() async {
     try {
-      final f = await _file();
-      await f.writeAsString(json.encode({
+      await writeJsonAtomic(await _file(), {
         'schema': 1,
         'activeId': _activeId,
         'bibles': _bibles.map((b) => b.toJson()).toList(),
-      }));
+      });
     } catch (e) {
       debugPrint('Error saving library: $e');
     }

@@ -1,9 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+
+import 'atomic_file.dart';
 
 /// User preferences that persist across launches. File-based JSON, consistent
 /// with the app's other stores (DrawingStore) — no extra plugin dependency.
@@ -71,12 +72,9 @@ class SettingsStore {
   static Future<void> init() async {
     if (_loaded) return;
     try {
-      final f = await _file();
-      if (await f.exists()) {
-        final s = await f.readAsString();
-        if (s.isNotEmpty) {
-          _value = Settings.fromJson(json.decode(s) as Map<String, dynamic>);
-        }
+      final r = await readJsonResilient(await _file());
+      if (r.data is Map<String, dynamic>) {
+        _value = Settings.fromJson(r.data as Map<String, dynamic>);
       }
     } catch (e) {
       debugPrint('Error loading settings: $e');
@@ -87,14 +85,21 @@ class SettingsStore {
   static void update(Settings next) {
     _value = next;
     _saveDebouncer?.cancel();
-    _saveDebouncer = Timer(const Duration(milliseconds: 500), () async {
-      try {
-        final f = await _file();
-        await f.writeAsString(json.encode(_value.toJson()));
-      } catch (e) {
-        debugPrint('Error saving settings: $e');
-      }
-    });
+    _saveDebouncer = Timer(const Duration(milliseconds: 500), _write);
+  }
+
+  /// Cancel any pending debounce and write immediately (e.g. on app pause).
+  static Future<void> flushNow() async {
+    _saveDebouncer?.cancel();
+    await _write();
+  }
+
+  static Future<void> _write() async {
+    try {
+      await writeJsonAtomic(await _file(), _value.toJson());
+    } catch (e) {
+      debugPrint('Error saving settings: $e');
+    }
   }
 
   /// Whether a settings file was ever written — i.e. this is an existing user,
