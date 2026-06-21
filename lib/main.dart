@@ -966,6 +966,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
               ('plans', Icons.event_note, 'Reading plans'),
               ('notes', Icons.gesture, 'My notes'),
               ('library', Icons.auto_stories_outlined, 'My Bibles'),
+              ('about', Icons.info_outline, 'About'),
             ])
               ListTile(
                 leading: Icon(item.$2, color: kInk),
@@ -987,6 +988,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
         await _openScreen(const NotesBrowserScreen());
       case 'library':
         await _openLibrary();
+      case 'about':
+        await Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const AboutScreen()));
     }
   }
 
@@ -2555,6 +2559,84 @@ class _PlansScreenState extends State<PlansScreen> {
         ),
       );
 
+}
+
+// App identity, kept in sync with pubspec.yaml `version:`. A const avoids a
+// platform plugin (package_info_plus) on an otherwise fully-offline app.
+const String kAppName = 'Onyx Bible';
+const String kAppVersion = '1.0.0';
+const String kRepoUrl = 'https://github.com/greenducktape/OnyxBible';
+
+/// About / credits — reachable from the menu so the required attributions are
+/// always visible (CC-BY for the cross-references; the bundled texts' and fonts'
+/// licenses), alongside the app version, a plain privacy statement, and the full
+/// open-source license list.
+class AboutScreen extends StatelessWidget {
+  const AboutScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kPaper,
+      appBar: AppBar(title: Text('About', style: kTitleStyle(20))),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+        children: [
+          Text(kAppName, style: kTitleStyle(26)),
+          const SizedBox(height: 2),
+          Text('Version $kAppVersion',
+              style: GoogleFonts.crimsonPro(fontSize: 14, color: kMuted)),
+          const SizedBox(height: 14),
+          _body('An offline, ad-free scripture reader and stylus notebook for '
+              'Onyx Boox e-ink devices. Print a Bible once, then read and write '
+              'in it like a paper book.'),
+          _section('Scripture texts'),
+          _body('King James Version — Public Domain.\n'
+              'Reina-Valera 1909 — Dominio público.\n'
+              'Luther 1912 — Gemeinfrei (Public Domain).\n'
+              'Each is bundled for fully offline reading.'),
+          _section('Cross-references'),
+          _body('Reading-plan pairings use the OpenBible.info cross-reference '
+              'dataset, used under the Creative Commons Attribution 4.0 license '
+              '(CC-BY 4.0).'),
+          _section('Typefaces'),
+          _body('Crimson Pro, EB Garamond, Lora, and Atkinson Hyperlegible, '
+              'each under the SIL Open Font License.'),
+          _section('Privacy'),
+          _body('Your notes and settings stay on this device. There is no '
+              'account, no analytics, and no tracking. The only network use is '
+              'optional: fetching a non-bundled translation if you choose one.'),
+          _section('Source'),
+          _body('This app is open-source:\n$kRepoUrl'),
+          const SizedBox(height: 20),
+          OutlinedButton(
+            onPressed: () => showLicensePage(
+              context: context,
+              applicationName: kAppName,
+              applicationVersion: kAppVersion,
+            ),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: kInk,
+              side: const BorderSide(color: kInk),
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+            ),
+            child: const Text('Open-source licenses'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _section(String title) => Padding(
+        padding: const EdgeInsets.only(top: 22, bottom: 6),
+        child: Text(title.toUpperCase(),
+            style: GoogleFonts.crimsonPro(
+                fontSize: 12, letterSpacing: 1.5, color: kMuted)),
+      );
+
+  Widget _body(String text) => Text(text,
+      style: GoogleFonts.crimsonPro(fontSize: 16, color: kInk, height: 1.45));
 }
 
 /// Build a reading plan by choosing what you want from it — chapters per day,
