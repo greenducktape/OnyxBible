@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -5,8 +8,19 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Release signing is read from android/key.properties when present (kept out of
+// git — see .gitignore). When it's absent (CI without secrets, contributor
+// builds, local dev) the release build falls back to the debug key so the APK
+// still assembles. Drop in key.properties + the keystore to sign for the store.
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
 android {
-    namespace = "com.example.boox_bible"
+    namespace = "com.onyxbible.reader"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -20,14 +34,24 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.boox_bible"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        applicationId = "com.onyxbible.reader"
+        // minSdk/targetSdk follow Flutter's defaults, kept conservative so the
+        // app installs on Boox devices' older Android builds.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+    }
+
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKeystore) {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
     }
 
     packaging {
@@ -41,9 +65,13 @@ android {
 
     buildTypes {
         release {
-            // Signing with the debug keys for now, so the release APK installs
-            // without a keystore (fine for personal sideloading to a Boox).
-            signingConfig = signingConfigs.getByName("debug")
+            // Sign with the real keystore when configured; otherwise the debug
+            // key so the release APK still installs for sideloading.
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             // No code shrinking: R8 full-mode otherwise errors on optional
             // Play Core / deferred-component classes the app never uses.
             isMinifyEnabled = false

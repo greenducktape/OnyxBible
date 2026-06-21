@@ -2,8 +2,10 @@ name: Build APK
 
 # Produces an installable Android APK and attaches it to a GitHub Release so it
 # can be downloaded straight onto a Boox and sideloaded — no Android Studio
-# needed. The release build is debug-signed (see android/app/build.gradle.kts),
-# which is fine for personal sideloading.
+# needed. If the ANDROID_KEYSTORE_BASE64 secret (+ key passwords) is set, the
+# release is signed with that production keystore; otherwise it falls back to
+# the debug key (see android/app/build.gradle.kts), which is fine for
+# sideloading but not for the Onyx store.
 
 on:
   workflow_dispatch: # lets you trigger a fresh build by hand from the Actions tab
@@ -16,6 +18,10 @@ permissions:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    # Surface the keystore secret as an env var so steps can test for its
+    # presence (the `secrets` context is not available in step `if:`).
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +35,25 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build release APK (debug-signed, installable)
+      # Writes android/key.properties + the keystore ONLY when the secret is
+      # present. build.gradle.kts then signs the release with it; without it the
+      # build falls back to the debug key so contributor/CI builds still work.
+      - name: Configure release signing (if secret present)
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storeFile=upload-keystore.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: Build release APK
         run: flutter build apk --release
 
       - name: Rename APK
