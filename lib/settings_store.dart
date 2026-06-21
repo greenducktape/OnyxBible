@@ -94,6 +94,12 @@ class SettingsStore {
     await _write();
   }
 
+  /// Replace all settings (used when restoring a backup).
+  static Future<void> restore(Settings next) async {
+    _value = next;
+    await flushNow();
+  }
+
   static Future<void> _write() async {
     try {
       await writeJsonAtomic(await _file(), _value.toJson());

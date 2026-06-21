@@ -3,13 +3,14 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart' show kSecondaryButton, kTertiaryButton;
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:onyxsdk_pen/onyxsdk_pen.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'atomic_file.dart';
+import 'backup.dart';
 import 'books.dart';
 import 'library_store.dart';
 import 'plan_store.dart';
@@ -59,6 +60,51 @@ Future<void> _bootstrapLibrary() async {
   }
 }
 
+// --- Bundled typefaces ----------------------------------------------------
+//
+// The reading fonts are bundled as assets (see pubspec `fonts:`) so the app is
+// fully offline from the very first launch — no Google Fonts network fetch.
+// Crimson Pro / EB Garamond / Lora are variable fonts whose `wght` axis covers
+// every weight the UI asks for via [FontWeight]; Atkinson Hyperlegible ships
+// regular + bold. These helpers replace the old GoogleFonts.* calls 1:1.
+
+/// A text style in any bundled family.
+TextStyle appFont(
+  String family, {
+  double? fontSize,
+  FontWeight? fontWeight,
+  Color? color,
+  double? height,
+  double? letterSpacing,
+  FontStyle? fontStyle,
+}) =>
+    TextStyle(
+      fontFamily: family,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      color: color,
+      height: height,
+      letterSpacing: letterSpacing,
+      fontStyle: fontStyle,
+    );
+
+/// Crimson Pro — the default serif used across the chrome and headings.
+TextStyle crimson({
+  double? fontSize,
+  FontWeight? fontWeight,
+  Color? color,
+  double? height,
+  double? letterSpacing,
+  FontStyle? fontStyle,
+}) =>
+    appFont('Crimson Pro',
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        color: color,
+        height: height,
+        letterSpacing: letterSpacing,
+        fontStyle: fontStyle);
+
 // --- E-ink design tokens --------------------------------------------------
 //
 // E-ink panels can't render subtle greys (they dither into noisy stipple), so
@@ -104,7 +150,7 @@ const List<double> kLineSpacings = [1.4, 1.55, 1.75, 2.0];
 const List<String> kLineSpacingLabels = ['Tight', 'Normal', 'Relaxed', 'Airy'];
 
 /// Verse body style for a printed Bible's locked layout (family/size/spacing).
-TextStyle verseStyleForCfg(BibleConfig c) => GoogleFonts.getFont(
+TextStyle verseStyleForCfg(BibleConfig c) => appFont(
       c.fontFamily,
       fontSize: c.fontSizePt,
       height: kLineSpacings[c.lineSpacingIndex.clamp(0, kLineSpacings.length - 1)],
@@ -113,10 +159,10 @@ TextStyle verseStyleForCfg(BibleConfig c) => GoogleFonts.getFont(
 
 /// Plain size-only serif style — used by setup previews and small chrome.
 TextStyle verseStyleOf(double fontSize) =>
-    GoogleFonts.crimsonPro(fontSize: fontSize, height: 1.55, color: kInk);
+    crimson(fontSize: fontSize, height: 1.55, color: kInk);
 
 final TextStyle kVerseStyle = verseStyleOf(22);
-final TextStyle kVerseNumberStyle = GoogleFonts.crimsonPro(
+final TextStyle kVerseNumberStyle = crimson(
   fontSize: 13,
   height: 1.2,
   color: kMuted,
@@ -124,7 +170,7 @@ final TextStyle kVerseNumberStyle = GoogleFonts.crimsonPro(
 );
 
 TextStyle kTitleStyle(double size, {FontWeight weight = FontWeight.w600}) =>
-    GoogleFonts.crimsonPro(fontSize: size, fontWeight: weight, color: kInk);
+    crimson(fontSize: size, fontWeight: weight, color: kInk);
 
 // --- Data Models ----------------------------------------------------------
 
@@ -329,6 +375,31 @@ class DrawingStore {
       if (await f.exists()) await f.delete();
     } catch (_) {/* best effort */}
   }
+
+  /// Raw notes JSON for a Bible (decoded), or null. Used by backup/export.
+  static Future<dynamic> rawNotesFor(String id) async {
+    final r = await readJsonResilient(await _noteFile(id));
+    return r.data;
+  }
+
+  /// Overwrite a Bible's notes file from backup data (atomic). Does not touch
+  /// the in-memory cache; call [reloadActive] afterwards if [id] is open.
+  static Future<void> writeRawNotesFor(String id, Object notesJson) async {
+    await writeJsonAtomic(await _noteFile(id), notesJson);
+  }
+
+  /// Drop any pending debounced save without writing (used before a restore
+  /// replaces the notes files wholesale).
+  static void cancelPendingSave() => _saveDebouncer?.cancel();
+
+  /// Open [id] and (re)load its notes from disk even if it is already the
+  /// current Bible — used after a restore rewrites the notes files.
+  static Future<void> switchAndReload(String id) async {
+    _saveDebouncer?.cancel();
+    _bibleId = null; // force useBible to actually reload from disk
+    _notes.clear();
+    await useBible(id);
+  }
 }
 
 // --- Pagination cache -----------------------------------------------------
@@ -503,7 +574,8 @@ class BooxBibleApp extends StatelessWidget {
     );
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: base.copyWith(textTheme: GoogleFonts.crimsonProTextTheme(base.textTheme)),
+      theme: base.copyWith(
+          textTheme: base.textTheme.apply(fontFamily: 'Crimson Pro')),
       home: const RootScreen(),
     );
   }
@@ -1142,7 +1214,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
             const SizedBox(width: 8),
             Text(
               'Day ${_session!.dayIndex + 1}·${_session!.plan.length}',
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                   fontSize: 12, color: kMuted, fontWeight: FontWeight.w600),
             ),
             GestureDetector(
@@ -1495,7 +1567,7 @@ class ChapterHeader extends StatelessWidget {
         children: [
           Text(
             book.toUpperCase(),
-            style: GoogleFonts.crimsonPro(
+            style: crimson(
               fontSize: 13,
               letterSpacing: 4,
               fontWeight: FontWeight.w600,
@@ -1505,7 +1577,7 @@ class ChapterHeader extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             '$chapter',
-            style: GoogleFonts.crimsonPro(
+            style: crimson(
                 fontSize: 64, fontWeight: FontWeight.w500, color: kInk),
           ),
           const SizedBox(height: 10),
@@ -1839,7 +1911,7 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
         padding: const EdgeInsets.fromLTRB(24, 22, 24, 8),
         child: Text(
           label.toUpperCase(),
-          style: GoogleFonts.crimsonPro(
+          style: crimson(
               fontSize: 12,
               letterSpacing: 3,
               fontWeight: FontWeight.w600,
@@ -1871,7 +1943,7 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
               ),
             ),
             Text('${b.chapters}',
-                style: GoogleFonts.crimsonPro(color: kMuted, fontSize: 14)),
+                style: crimson(color: kMuted, fontSize: 14)),
           ],
         ),
       ),
@@ -1904,7 +1976,7 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
             alignment: Alignment.center,
             child: Text(
               '$n',
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                 fontSize: 20,
                 fontWeight: FontWeight.w600,
                 color: isCurrent ? kPaper : kInk,
@@ -2029,7 +2101,7 @@ class _NotesBrowserScreenState extends State<NotesBrowserScreen> {
                             const Icon(Icons.gesture, size: 16, color: kMuted),
                             const SizedBox(width: 5),
                             Text(marks,
-                                style: GoogleFonts.crimsonPro(
+                                style: crimson(
                                     color: kMuted, fontSize: 13)),
                           ],
                         ),
@@ -2039,7 +2111,7 @@ class _NotesBrowserScreenState extends State<NotesBrowserScreen> {
                             e.preview!,
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
-                            style: GoogleFonts.crimsonPro(
+                            style: crimson(
                                 fontSize: 16, height: 1.4, color: kMuted),
                           ),
                         ],
@@ -2150,7 +2222,7 @@ class _PlansScreenState extends State<PlansScreen> {
   Widget _sectionLabel(String text) => Padding(
         padding: const EdgeInsets.fromLTRB(24, 22, 24, 10),
         child: Text(text,
-            style: GoogleFonts.crimsonPro(
+            style: crimson(
                 fontSize: 12,
                 letterSpacing: 3,
                 fontWeight: FontWeight.w600,
@@ -2188,7 +2260,7 @@ class _PlansScreenState extends State<PlansScreen> {
             child: Text(
               'No plans yet. Build one and your progress is saved here — you '
               'can start another any time without losing this one.',
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                   fontSize: 16, color: kMuted, height: 1.4),
             ),
           )
@@ -2223,7 +2295,7 @@ class _PlansScreenState extends State<PlansScreen> {
                       sp.isFinished
                           ? 'Finished · $total readings'
                           : 'Reading ${done + 1} of $total',
-                      style: GoogleFonts.crimsonPro(
+                      style: crimson(
                           fontSize: 14, color: kMuted)),
                   const SizedBox(height: 8),
                   ClipRRect(
@@ -2259,17 +2331,17 @@ class _PlansScreenState extends State<PlansScreen> {
         backgroundColor: kPaper,
         title: Text('Delete this plan?', style: kTitleStyle(18)),
         content: Text('"${sp.title}" and its progress will be removed.',
-            style: GoogleFonts.crimsonPro(fontSize: 15, color: kInk)),
+            style: crimson(fontSize: 15, color: kInk)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child:
-                Text('Keep', style: GoogleFonts.crimsonPro(color: kMuted)),
+                Text('Keep', style: crimson(color: kMuted)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: Text('Delete',
-                style: GoogleFonts.crimsonPro(
+                style: crimson(
                     color: kInk, fontWeight: FontWeight.w700)),
           ),
         ],
@@ -2287,7 +2359,7 @@ class _PlansScreenState extends State<PlansScreen> {
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Text("Couldn't load cross-references for this plan.",
-              style: GoogleFonts.crimsonPro(fontSize: 16, color: kMuted)),
+              style: crimson(fontSize: 16, color: kMuted)),
         ),
       );
     }
@@ -2325,12 +2397,12 @@ class _PlansScreenState extends State<PlansScreen> {
                         ? 'Finished · $total readings'
                         : 'Reading ${done + 1} of $total',
                     style:
-                        GoogleFonts.crimsonPro(fontSize: 14, color: kMuted)),
+                        crimson(fontSize: 14, color: kMuted)),
                 if (s.streak > 0) ...[
                   Text('   ·   ',
-                      style: GoogleFonts.crimsonPro(color: kMuted)),
+                      style: crimson(color: kMuted)),
                   Text('${s.streak}-day streak',
-                      style: GoogleFonts.crimsonPro(
+                      style: crimson(
                           fontSize: 14,
                           color: kInk,
                           fontWeight: FontWeight.w600)),
@@ -2382,7 +2454,7 @@ class _PlansScreenState extends State<PlansScreen> {
           child: TextButton(
             onPressed: () => setState(() => _detailId = null),
             child: Text('Back to my plans',
-                style: GoogleFonts.crimsonPro(
+                style: crimson(
                     fontSize: 15, color: kInk, fontWeight: FontWeight.w600)),
           ),
         ),
@@ -2403,7 +2475,7 @@ class _PlansScreenState extends State<PlansScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('NEXT READING',
-                style: GoogleFonts.crimsonPro(
+                style: crimson(
                     fontSize: 11,
                     letterSpacing: 2.5,
                     fontWeight: FontWeight.w600,
@@ -2442,7 +2514,7 @@ class _PlansScreenState extends State<PlansScreen> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text('Paired by cross-references',
-                        style: GoogleFonts.crimsonPro(
+                        style: crimson(
                             fontSize: 13,
                             color: kMuted,
                             fontStyle: FontStyle.italic)),
@@ -2469,7 +2541,7 @@ class _PlansScreenState extends State<PlansScreen> {
                 child: TextButton(
                   onPressed: _undo,
                   child: Text('Undo last',
-                      style: GoogleFonts.crimsonPro(
+                      style: crimson(
                           fontSize: 14, color: kMuted)),
                 ),
               ),
@@ -2491,7 +2563,7 @@ class _PlansScreenState extends State<PlansScreen> {
                 style: kTitleStyle(20, weight: FontWeight.w700)),
             const SizedBox(height: 6),
             Text('Take a moment — then read on, or start another plan.',
-                style: GoogleFonts.crimsonPro(
+                style: crimson(
                     fontSize: 15, color: kMuted, height: 1.4)),
             if (sp.completedCount > 0)
               Align(
@@ -2499,7 +2571,7 @@ class _PlansScreenState extends State<PlansScreen> {
                 child: TextButton(
                   onPressed: _undo,
                   child: Text('Reopen last reading',
-                      style: GoogleFonts.crimsonPro(
+                      style: crimson(
                           fontSize: 14, color: kMuted)),
                 ),
               ),
@@ -2531,7 +2603,7 @@ class _PlansScreenState extends State<PlansScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(label,
-                        style: GoogleFonts.crimsonPro(
+                        style: crimson(
                             fontSize: 12,
                             letterSpacing: 1.5,
                             color: kMuted)),
@@ -2555,7 +2627,7 @@ class _PlansScreenState extends State<PlansScreen> {
           'Pairings follow real cross-references from the OpenBible.info '
           'dataset (CC-BY 4.0).',
           style:
-              GoogleFonts.crimsonPro(fontSize: 13, color: kMuted, height: 1.4),
+              crimson(fontSize: 13, color: kMuted, height: 1.4),
         ),
       );
 
@@ -2585,7 +2657,7 @@ class AboutScreen extends StatelessWidget {
           Text(kAppName, style: kTitleStyle(26)),
           const SizedBox(height: 2),
           Text('Version $kAppVersion',
-              style: GoogleFonts.crimsonPro(fontSize: 14, color: kMuted)),
+              style: crimson(fontSize: 14, color: kMuted)),
           const SizedBox(height: 14),
           _body('An offline, ad-free scripture reader and stylus notebook for '
               'Onyx Boox e-ink devices. Print a Bible once, then read and write '
@@ -2606,6 +2678,30 @@ class AboutScreen extends StatelessWidget {
           _body('Your notes and settings stay on this device. There is no '
               'account, no analytics, and no tracking. The only network use is '
               'optional: fetching a non-bundled translation if you choose one.'),
+          _section('Backup'),
+          _body('Because nothing is stored in the cloud, export a backup to keep '
+              'your Bibles, notes, and plans safe off-device. Restoring replaces '
+              'everything currently in the app.'),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _export(context),
+                  style: _btnStyle(),
+                  child: const Text('Export backup'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _restore(context),
+                  style: _btnStyle(),
+                  child: const Text('Restore'),
+                ),
+              ),
+            ],
+          ),
           _section('Source'),
           _body('This app is open-source:\n$kRepoUrl'),
           const SizedBox(height: 20),
@@ -2615,12 +2711,7 @@ class AboutScreen extends StatelessWidget {
               applicationName: kAppName,
               applicationVersion: kAppVersion,
             ),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: kInk,
-              side: const BorderSide(color: kInk),
-              shape:
-                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-            ),
+            style: _btnStyle(),
             child: const Text('Open-source licenses'),
           ),
         ],
@@ -2628,15 +2719,77 @@ class AboutScreen extends StatelessWidget {
     );
   }
 
+  ButtonStyle _btnStyle() => OutlinedButton.styleFrom(
+        foregroundColor: kInk,
+        side: const BorderSide(color: kInk),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+      );
+
+  Future<void> _export(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await BackupService.exportViaShare();
+    } catch (e) {
+      messenger.showSnackBar(
+          const SnackBar(content: Text("Couldn't export the backup.")));
+    }
+  }
+
+  Future<void> _restore(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: kPaper,
+        title: Text('Restore from backup?', style: kTitleStyle(18)),
+        content: Text(
+            'This replaces all Bibles, notes, and plans currently in the app '
+            'with the contents of the backup file.',
+            style: crimson(fontSize: 15, color: kInk, height: 1.4)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text('Cancel', style: crimson(color: kMuted))),
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text('Restore',
+                  style: crimson(color: kInk, fontWeight: FontWeight.w600))),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+    final path = picked?.files.single.path;
+    if (path == null) return;
+
+    try {
+      await BackupService.restoreFromFile(File(path));
+    } catch (_) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('That file is not a valid Onyx Bible backup.')));
+      return;
+    }
+    // Rebuild the whole app from the restored data so the reader reflects it.
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const RootScreen()),
+      (route) => false,
+    );
+  }
+
   Widget _section(String title) => Padding(
         padding: const EdgeInsets.only(top: 22, bottom: 6),
         child: Text(title.toUpperCase(),
-            style: GoogleFonts.crimsonPro(
+            style: crimson(
                 fontSize: 12, letterSpacing: 1.5, color: kMuted)),
       );
 
   Widget _body(String text) => Text(text,
-      style: GoogleFonts.crimsonPro(fontSize: 16, color: kInk, height: 1.45));
+      style: crimson(fontSize: 16, color: kInk, height: 1.45));
 }
 
 /// Build a reading plan by choosing what you want from it — chapters per day,
@@ -2706,10 +2859,10 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
                 const SizedBox(height: 4),
                 Text('${durationLabel(days)} · $days readings',
                     style:
-                        GoogleFonts.crimsonPro(fontSize: 14, color: kInk)),
+                        crimson(fontSize: 14, color: kInk)),
                 const SizedBox(height: 12),
                 Text(narrativeFor(_c),
-                    style: GoogleFonts.crimsonPro(
+                    style: crimson(
                         fontSize: 16, color: kMuted, height: 1.45)),
               ],
             ),
@@ -2816,7 +2969,7 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('DAY 1',
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                   fontSize: 11,
                   letterSpacing: 2.5,
                   fontWeight: FontWeight.w600,
@@ -2834,7 +2987,7 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
   Widget _builderLabel(String t) => Padding(
         padding: const EdgeInsets.fromLTRB(24, 26, 24, 10),
         child: Text(t,
-            style: GoogleFonts.crimsonPro(
+            style: crimson(
                 fontSize: 12,
                 letterSpacing: 3,
                 fontWeight: FontWeight.w600,
@@ -2857,7 +3010,7 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
           style: kTitleStyle(17, weight: FontWeight.w500)
               .copyWith(color: disabled ? kMuted : kInk)),
       subtitle: Text(subtitle,
-          style: GoogleFonts.crimsonPro(
+          style: crimson(
               fontSize: 13, color: kMuted, height: 1.3)),
     );
   }
@@ -2877,7 +3030,7 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(label,
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                   color: selected ? kPaper : kInk)),
@@ -3037,7 +3190,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             title: Text('Print a new Bible',
                 style: kTitleStyle(18, weight: FontWeight.w600)),
             subtitle: Text('Pick a translation and layout, then lock it in',
-                style: GoogleFonts.crimsonPro(fontSize: 13, color: kMuted)),
+                style: crimson(fontSize: 13, color: kMuted)),
             onTap: _printNew,
           ),
         ],
@@ -3056,7 +3209,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               weight: active ? FontWeight.w700 : FontWeight.w500)),
       subtitle: Text(
           '${t.displayName} · ${b.fontFamily} · ${b.fontSizePt.round()}pt',
-          style: GoogleFonts.crimsonPro(fontSize: 13, color: kMuted)),
+          style: crimson(fontSize: 13, color: kMuted)),
       trailing: (!active && count > 1)
           ? IconButton(
               icon: const Icon(Icons.delete_outline, color: kMuted),
@@ -3086,7 +3239,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         title: Text('Delete this Bible?', style: kTitleStyle(18)),
         content: Text(
             'Its handwritten notes will be removed too. This cannot be undone.',
-            style: GoogleFonts.crimsonPro(fontSize: 15, color: kInk)),
+            style: crimson(fontSize: 15, color: kInk)),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -3140,7 +3293,7 @@ class _SetupWizardState extends State<SetupWizard> {
     super.dispose();
   }
 
-  TextStyle _sampleStyle() => GoogleFonts.getFont(_family,
+  TextStyle _sampleStyle() => appFont(_family,
       fontSize: _size, height: kLineSpacings[_spacing], color: kInk);
 
   Future<void> _print() async {
@@ -3242,7 +3395,7 @@ class _SetupWizardState extends State<SetupWizard> {
                 TextButton(
                   onPressed: () => setState(() => _step--),
                   child: Text('Back',
-                      style: GoogleFonts.crimsonPro(
+                      style: crimson(
                           fontSize: 16, color: kMuted)),
                 ),
               const Spacer(),
@@ -3273,7 +3426,7 @@ class _SetupWizardState extends State<SetupWizard> {
           const SizedBox(height: 6),
           Text(blurb,
               style:
-                  GoogleFonts.crimsonPro(fontSize: 15, color: kMuted, height: 1.4)),
+                  crimson(fontSize: 15, color: kMuted, height: 1.4)),
           const SizedBox(height: 20),
           ...children,
         ],
@@ -3299,7 +3452,7 @@ class _SetupWizardState extends State<SetupWizard> {
                                 selected ? FontWeight.w700 : FontWeight.w400)),
                     if (sub != null)
                       Text(sub,
-                          style: GoogleFonts.crimsonPro(
+                          style: crimson(
                               fontSize: 13, color: kMuted)),
                   ],
                 ),
@@ -3359,7 +3512,7 @@ class _SetupWizardState extends State<SetupWizard> {
             _radioRow(f, null, _family == f, () => setState(() => _family = f)),
           const SizedBox(height: 16),
           Text('SIZE',
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                   fontSize: 12,
                   letterSpacing: 3,
                   fontWeight: FontWeight.w600,
@@ -3382,7 +3535,7 @@ class _SetupWizardState extends State<SetupWizard> {
         'Wider margins leave blank space beside the text for your notes.',
         [
           Text('MARGIN',
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                   fontSize: 12,
                   letterSpacing: 3,
                   fontWeight: FontWeight.w600,
@@ -3398,7 +3551,7 @@ class _SetupWizardState extends State<SetupWizard> {
           ),
           const SizedBox(height: 16),
           Text('LINE SPACING',
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                   fontSize: 12,
                   letterSpacing: 3,
                   fontWeight: FontWeight.w600,
@@ -3477,7 +3630,7 @@ class _SetupWizardState extends State<SetupWizard> {
             SizedBox(
               width: 140,
               child: Text(k,
-                  style: GoogleFonts.crimsonPro(fontSize: 15, color: kMuted)),
+                  style: crimson(fontSize: 15, color: kMuted)),
             ),
             Expanded(
               child: Text(v, style: kTitleStyle(16, weight: FontWeight.w600)),
@@ -3497,7 +3650,7 @@ class _SetupWizardState extends State<SetupWizard> {
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(label,
-              style: GoogleFonts.crimsonPro(
+              style: crimson(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: selected ? kPaper : kInk)),

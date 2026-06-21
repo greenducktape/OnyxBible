@@ -18,6 +18,12 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
   cross-references most strongly echo it, instead of marching through Matthew.
 - **About screen** with version, credits, attributions, a privacy statement,
   and the full open-source license list.
+- **Bundled reading fonts** (Crimson Pro, EB Garamond, Lora, Atkinson
+  Hyperlegible) so the app is fully offline from the first launch — no font
+  download on a fresh device.
+- **Backup & restore**: export everything (Bibles, notes, plans, settings) to a
+  single file via the share sheet, and restore it later. Nothing is stored in
+  the cloud, so this is the off-device safety net.
 
 ### Changed
 - All saved data (notes, library, plans, settings) is now written **atomically**

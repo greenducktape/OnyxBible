@@ -41,7 +41,10 @@ dependencies:
   cupertino_icons: ^1.0.8
   http: ^1.4.0
   path_provider: ^2.1.2
-  google_fonts: ^6.2.1
+  # Reading fonts are bundled (see the `fonts:` section) rather than fetched at
+  # runtime, so the app is fully offline from first launch — google_fonts dropped.
+  share_plus: ^10.0.0 # export a backup via the system share sheet
+  file_picker: ^8.1.0 # pick a backup file to restore
 
 dev_dependencies:
   flutter_test:
@@ -86,22 +89,21 @@ flutter:
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
 
-  # To add custom fonts to your application, add a fonts section here,
-  # in this "flutter" section. Each entry in this list should have a
-  # "family" key with the font family name, and a "fonts" key with a
-  # list giving the asset and other descriptors for the font. For
-  # example:
-  # fonts:
-  #   - family: Schyler
-  #     fonts:
-  #       - asset: fonts/Schyler-Regular.ttf
-  #       - asset: fonts/Schyler-Italic.ttf
-  #         style: italic
-  #   - family: Trajan Pro
-  #     fonts:
-  #       - asset: fonts/TrajanPro.ttf
-  #       - asset: fonts/TrajanPro_Bold.ttf
-  #         weight: 700
-  #
-  # For details regarding fonts from package dependencies,
-  # see https://flutter.dev/to/font-from-package
+  # Bundled reading fonts (SIL Open Font License; OFL.txt alongside each).
+  # Crimson Pro / EB Garamond / Lora are variable fonts whose `wght` axis maps to
+  # FontWeight; Atkinson Hyperlegible ships static regular + bold.
+  fonts:
+    - family: Crimson Pro
+      fonts:
+        - asset: assets/fonts/CrimsonPro-Variable.ttf
+    - family: EB Garamond
+      fonts:
+        - asset: assets/fonts/EBGaramond-Variable.ttf
+    - family: Lora
+      fonts:
+        - asset: assets/fonts/Lora-Variable.ttf
+    - family: Atkinson Hyperlegible
+      fonts:
+        - asset: assets/fonts/AtkinsonHyperlegible-Regular.ttf
+        - asset: assets/fonts/AtkinsonHyperlegible-Bold.ttf
+          weight: 700

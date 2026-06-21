@@ -139,6 +139,15 @@ class LibraryStore {
     _loaded = true;
   }
 
+  /// Replace the whole library (used when restoring a backup).
+  static Future<void> restore(List<BibleConfig> bibles, String? activeId) async {
+    _bibles = List.of(bibles);
+    _activeId = (activeId != null && _bibles.any((b) => b.id == activeId))
+        ? activeId
+        : (_bibles.isEmpty ? null : _bibles.first.id);
+    await _flush();
+  }
+
   /// Add a Bible and open it.
   static Future<void> add(BibleConfig config) async {
     _bibles.add(config);

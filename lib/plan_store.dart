@@ -153,6 +153,15 @@ class PlanStore {
     _write();
   }
 
+  /// Replace all saved plans (used when restoring a backup).
+  static Future<void> restore(List<SavedPlan> plans, String? activeId) async {
+    _plans = List.of(plans);
+    _activeId = (activeId != null && _plans.any((p) => p.id == activeId))
+        ? activeId
+        : (_plans.isEmpty ? null : _plans.last.id);
+    await _flush();
+  }
+
   static void delete(String id) {
     _plans = [for (final p in _plans) if (p.id != id) p];
     if (_activeId == id) _activeId = _plans.isEmpty ? null : _plans.last.id;
