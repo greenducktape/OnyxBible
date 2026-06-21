@@ -56,3 +56,38 @@ flutter pub get
 flutter run        # deploy to a connected Onyx Boox device
 flutter test       # run the widget test
 ```
+
+## Releasing (signing for the store)
+
+Release builds fall back to the debug key when no keystore is configured, so an
+APK always assembles. To produce a **store-signed** build, generate an upload
+keystore once:
+
+```sh
+keytool -genkey -v -keystore upload-keystore.jks \
+  -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+For local signed builds, put `android/key.properties` (gitignored):
+
+```properties
+storeFile=/absolute/path/to/upload-keystore.jks
+storePassword=…
+keyAlias=upload
+keyPassword=…
+```
+
+For CI signing, add these repository **secrets** — the `Build APK` workflow then
+signs automatically:
+
+- `ANDROID_KEYSTORE_BASE64` — `base64 -w0 upload-keystore.jks`
+- `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`
+
+Keep the keystore and passwords private; losing them means you can't ship
+updates under the same app identity (`com.onyxbible.reader`).
+
+## License
+
+App code is under the MIT License (`LICENSE`). Bundled scripture is public
+domain; cross-reference data is OpenBible.info under CC-BY 4.0; fonts are under
+the SIL Open Font License — see `NOTICE.md` and the in-app **About** screen.
