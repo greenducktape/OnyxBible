@@ -135,7 +135,7 @@ const EdgeInsets kPageVPadding = EdgeInsets.symmetric(vertical: 16);
 // Reading-layout options offered once, in the "Print your Bible" setup. After a
 // Bible is printed these are locked — which is exactly what keeps handwritten
 // notes aligned forever.
-const List<double> kFontSizeOptions = [18, 20, 22, 26, 30, 36];
+const List<double> kFontSizeOptions = [18, 20, 22, 26, 30, 36, 44, 52];
 const List<String> kFontFamilies = [
   'Crimson Pro', // serif, default
   'EB Garamond', // classic serif
@@ -148,6 +148,23 @@ const List<double> kMarginFractions = [0.96, 0.82, 0.68, 0.55];
 const List<String> kMarginLabels = ['Standard', 'Wide', 'Wider', 'Widest'];
 const List<double> kLineSpacings = [1.4, 1.55, 1.75, 2.0];
 const List<String> kLineSpacingLabels = ['Tight', 'Normal', 'Relaxed', 'Airy'];
+
+// Interface (chrome) scale for large e-ink panels. Many Boox devices report a
+// near-1.0 devicePixelRatio with a very high logical resolution, so fixed
+// logical sizes render physically tiny on a 13" screen. Index 0 = Auto (derived
+// from the screen size); the rest are explicit multipliers the user can pick.
+const List<String> kUiSizeLabels = ['Auto', 'Large', 'Larger', 'Largest'];
+const List<double> kUiSizeScales = [0.0, 1.3, 1.6, 2.0]; // 0 = auto
+
+/// The chrome scale for [context]: an explicit user choice, or an auto value
+/// derived from the shorter screen edge when set to Auto.
+double uiScaleFor(BuildContext context) {
+  final idx =
+      SettingsStore.value.uiSizeIndex.clamp(0, kUiSizeScales.length - 1).toInt();
+  if (idx > 0) return kUiSizeScales[idx];
+  final shortest = MediaQuery.of(context).size.shortestSide;
+  return (shortest / 1100).clamp(1.0, 2.2);
+}
 
 /// Verse body style for a printed Bible's locked layout (family/size/spacing).
 TextStyle verseStyleForCfg(BibleConfig c) => appFont(
@@ -806,6 +823,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   // flip the page; the page is turned with the on-bar arrows instead. Persisted.
   bool _ignoreTouch = SettingsStore.value.ignoreTouch;
 
+  // Chrome scale (toolbar/menus), recomputed each build from screen size or the
+  // user's Interface-size choice. 1.0 on phones; larger on big e-ink panels.
+  double _ui = 1.0;
+
   @override
   void initState() {
     super.initState();
@@ -1038,14 +1059,15 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
               ('plans', Icons.event_note, 'Reading plans'),
               ('notes', Icons.gesture, 'My notes'),
               ('library', Icons.auto_stories_outlined, 'My Bibles'),
+              ('uisize', Icons.format_size, 'Interface size'),
               ('about', Icons.info_outline, 'About'),
             ])
               ListTile(
-                leading: Icon(item.$2, color: kInk),
-                title: Text(item.$3, style: kTitleStyle(18)),
+                leading: Icon(item.$2, color: kInk, size: 24 * _ui),
+                title: Text(item.$3, style: kTitleStyle(18 * _ui)),
                 onTap: () => Navigator.of(context).pop(item.$1),
               ),
-            const SizedBox(height: 8),
+            SizedBox(height: 8 * _ui),
           ],
         ),
       ),
@@ -1060,10 +1082,46 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
         await _openScreen(const NotesBrowserScreen());
       case 'library':
         await _openLibrary();
+      case 'uisize':
+        await _openUiSizePicker();
       case 'about':
         await Navigator.of(context)
             .push(MaterialPageRoute(builder: (_) => const AboutScreen()));
     }
+  }
+
+  // Lets the user override the auto chrome scale — handy on big Boox panels
+  // where the device under-reports its density and controls look small.
+  Future<void> _openUiSizePicker() async {
+    final current = SettingsStore.value.uiSizeIndex
+        .clamp(0, kUiSizeLabels.length - 1)
+        .toInt();
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: kPaper,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+              child: Text('Interface size', style: kTitleStyle(16 * _ui)),
+            ),
+            for (var i = 0; i < kUiSizeLabels.length; i++)
+              ListTile(
+                leading: Icon(i == current ? Icons.check : Icons.format_size,
+                    color: i == current ? kInk : kMuted, size: 24 * _ui),
+                title: Text(kUiSizeLabels[i], style: kTitleStyle(18 * _ui)),
+                onTap: () => Navigator.of(context).pop(i),
+              ),
+            SizedBox(height: 8 * _ui),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    SettingsStore.update(SettingsStore.value.copyWith(uiSizeIndex: picked));
+    setState(() {}); // rebuild so _ui picks up the new choice
   }
 
   // Plans can pop either a PlanSession (start reading the plan) or a BibleRef.
@@ -1145,6 +1203,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
 
   @override
   Widget build(BuildContext context) {
+    _ui = uiScaleFor(context);
     return Scaffold(
       body: SafeArea(
         bottom: false,
@@ -1180,7 +1239,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   // no bottom navigation bar — the canvas takes all remaining height.
   Widget _buildUnifiedBar() {
     return Container(
-      height: 52,
+      height: 52 * _ui,
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: kDisabled, width: 1)),
       ),
@@ -1188,7 +1247,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
         children: [
           IconButton(
             tooltip: 'Menu',
-            icon: const Icon(Icons.menu, color: kInk),
+            icon: Icon(Icons.menu, color: kInk, size: 24 * _ui),
             onPressed: _openMenu,
           ),
           Flexible(
@@ -1202,42 +1261,42 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                     child: Text('$_book $_chapter',
                         overflow: TextOverflow.ellipsis,
                         softWrap: false,
-                        style: kTitleStyle(18)),
+                        style: kTitleStyle(18 * _ui)),
                   ),
-                  const SizedBox(width: 2),
-                  const Icon(Icons.expand_more, size: 16, color: kMuted),
+                  SizedBox(width: 2 * _ui),
+                  Icon(Icons.expand_more, size: 16 * _ui, color: kMuted),
                 ],
               ),
             ),
           ),
           if (_session != null) ...[
-            const SizedBox(width: 8),
+            SizedBox(width: 8 * _ui),
             Text(
               'Day ${_session!.dayIndex + 1}·${_session!.plan.length}',
               style: crimson(
-                  fontSize: 12, color: kMuted, fontWeight: FontWeight.w600),
+                  fontSize: 12 * _ui, color: kMuted, fontWeight: FontWeight.w600),
             ),
             GestureDetector(
               onTap: () => setState(() => _session = null),
-              child: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 4),
-                child: Icon(Icons.close, size: 14, color: kMuted),
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: 4 * _ui),
+                child: Icon(Icons.close, size: 14 * _ui, color: kMuted),
               ),
             ),
           ],
           // With palm rejection on, finger side-taps are off, so surface the
           // page arrows here as the way to turn pages.
           if (_ignoreTouch) ...[
-            const SizedBox(width: 4),
+            SizedBox(width: 4 * _ui),
             IconButton(
               tooltip: 'Previous page',
-              icon: const Icon(Icons.chevron_left, size: 24),
+              icon: Icon(Icons.chevron_left, size: 24 * _ui),
               color: kInk,
               onPressed: _prevPage,
             ),
             IconButton(
               tooltip: 'Next page',
-              icon: const Icon(Icons.chevron_right, size: 24),
+              icon: Icon(Icons.chevron_right, size: 24 * _ui),
               color: kInk,
               onPressed: _nextPage,
             ),
@@ -1247,7 +1306,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
             valueListenable: kUndo.canUndo,
             builder: (context, can, _) => IconButton(
               tooltip: 'Undo',
-              icon: const Icon(Icons.undo, size: 22),
+              icon: Icon(Icons.undo, size: 22 * _ui),
               color: kInk,
               disabledColor: kDisabled,
               onPressed: can ? () => kUndo.undo() : null,
@@ -1257,7 +1316,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
             valueListenable: kUndo.canRedo,
             builder: (context, can, _) => IconButton(
               tooltip: 'Redo',
-              icon: const Icon(Icons.redo, size: 22),
+              icon: Icon(Icons.redo, size: 22 * _ui),
               color: kInk,
               disabledColor: kDisabled,
               onPressed: can ? () => kUndo.redo() : null,
@@ -1303,7 +1362,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
           ),
           IconButton(
             tooltip: 'Refresh screen',
-            icon: const Icon(Icons.autorenew, size: 22, color: kInk),
+            icon: Icon(Icons.autorenew, size: 22 * _ui, color: kInk),
             onPressed: _forceRefresh,
           ),
         ],
@@ -1316,14 +1375,14 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   // a nib hides the row immediately.
   Widget _buildNibRow() {
     return Container(
-      height: 36,
+      height: 36 * _ui,
       decoration: const BoxDecoration(
         color: kPaper,
         border: Border(bottom: BorderSide(color: kDisabled, width: 1)),
       ),
       child: Row(
         children: [
-          const SizedBox(width: 12),
+          SizedBox(width: 12 * _ui),
           for (var i = 0; i < _widths.length; i++) _railNib(i),
           const Spacer(),
         ],
@@ -1341,20 +1400,20 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
       message: tooltip,
       child: InkResponse(
         onTap: onTap,
-        radius: 26,
+        radius: 26 * _ui,
         child: Container(
-          width: 46,
-          height: 46,
+          width: 46 * _ui,
+          height: 46 * _ui,
           alignment: Alignment.center,
           decoration: BoxDecoration(
             border: Border(
               bottom: BorderSide(
                 color: selected ? kInk : Colors.transparent,
-                width: 2.5,
+                width: 2.5 * _ui,
               ),
             ),
           ),
-          child: Icon(icon, size: 23, color: selected ? kInk : kMuted),
+          child: Icon(icon, size: 23 * _ui, color: selected ? kInk : kMuted),
         ),
       ),
     );
@@ -1364,7 +1423,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   // Selecting a nib also closes the on-demand nib row.
   Widget _railNib(int i) {
     final selected = !_isEraser && _widthIndex == i;
-    final d = (5 + _widths[i] * 1.5).clamp(6.0, 17.0);
+    final d = (5 + _widths[i] * 1.5).clamp(6.0, 17.0) * _ui;
     return Tooltip(
       message: _widths[i].toStringAsFixed(1),
       child: InkResponse(
@@ -1373,10 +1432,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
           _showNibs = false;
           _persist();
         }),
-        radius: 22,
+        radius: 22 * _ui,
         child: SizedBox(
-          width: 34,
-          height: 36,
+          width: 34 * _ui,
+          height: 36 * _ui,
           child: Center(
             child: Container(
               width: d,
@@ -1385,7 +1444,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                 shape: BoxShape.circle,
                 color: selected ? kInk : Colors.transparent,
                 border: Border.all(
-                    color: selected ? kInk : kMuted, width: 1.4),
+                    color: selected ? kInk : kMuted, width: 1.4 * _ui),
               ),
             ),
           ),
@@ -1537,6 +1596,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                     penWidth: _penWidth,
                     penStyle: _preset.id,
                     isEraser: _isEraser,
+                    eraseScale: _ui,
                   ),
                 ),
               ],
@@ -1639,6 +1699,7 @@ class PageInk extends StatefulWidget {
   final double penWidth;
   final String penStyle; // active pen recipe id (kPenPresets)
   final bool isEraser;
+  final double eraseScale; // chrome scale; widens the erase radius on big panels
 
   const PageInk({
     super.key,
@@ -1646,6 +1707,7 @@ class PageInk extends StatefulWidget {
     required this.penWidth,
     required this.penStyle,
     required this.isEraser,
+    this.eraseScale = 1.0,
   });
 
   @override
@@ -1665,6 +1727,9 @@ class _PageInkState extends State<PageInk> {
   final ValueNotifier<int> _activeRepaint = ValueNotifier<int>(0);
 
   static const double _eraseRadius = 18.0;
+  // Minimum spacing (logical px) between captured points while drawing. Below
+  // this a move is ignored, capping points-per-stroke and per-frame redraw cost.
+  static const double _minSegment = 1.3;
   Size? _canvasSize; // reported by the painter; used for capture box + eraser
   final List<Stroke> _erasedThisGesture = [];
 
@@ -1736,6 +1801,14 @@ class _PageInkState extends State<PageInk> {
       return;
     }
     if (_active == null) return;
+    // Decimate: drop sub-pixel moves. The stylus reports points far faster than
+    // the e-ink panel refreshes, and each kept point is redrawn every frame, so
+    // skipping near-duplicate points keeps long strokes (e.g. big margin notes)
+    // from getting progressively laggier without any visible loss of fidelity.
+    final last = _active!.points.last;
+    final dx = e.localPosition.dx - last.x;
+    final dy = e.localPosition.dy - last.y;
+    if (dx * dx + dy * dy < _minSegment * _minSegment) return;
     _active!.points
         .add(StrokePoint(e.localPosition.dx, e.localPosition.dy, e.pressure));
     // Only the active layer repaints — committed strokes are untouched.
@@ -1745,7 +1818,9 @@ class _PageInkState extends State<PageInk> {
   void _onUp(PointerUpEvent e) {
     var changed = false;
     if (_active != null) {
-      if (_active!.points.length > 1) {
+      // Commit even a single-point stroke so a deliberate dot still draws now
+      // that sub-pixel moves are decimated away.
+      if (_active!.points.isNotEmpty) {
         _strokes.add(_active!);
         DrawingStore.setStrokes(widget.pageKey, _strokes);
         kUndo.recordAdd(widget.pageKey, _active!);
@@ -1767,8 +1842,9 @@ class _PageInkState extends State<PageInk> {
   }
 
   void _eraseAt(Offset p) {
+    final radius = _eraseRadius * widget.eraseScale;
     final removed = _strokes
-        .where((s) => s.isNear(p, _eraseRadius, canvas: _canvasSize))
+        .where((s) => s.isNear(p, radius, canvas: _canvasSize))
         .toList();
     if (removed.isEmpty) return;
     _erasedThisGesture.addAll(removed);
@@ -1798,13 +1874,16 @@ class _PageInkState extends State<PageInk> {
               child: const SizedBox.expand(),
             ),
           ),
-          // In-progress stroke on top — the only thing repainting mid-stroke.
-          CustomPaint(
-            painter: _ActivePainter(
-              active: () => _active,
-              repaint: _activeRepaint,
+          // In-progress stroke on top, in its own RepaintBoundary so a move
+          // rasters only this layer — never the committed ink beneath it.
+          RepaintBoundary(
+            child: CustomPaint(
+              painter: _ActivePainter(
+                active: () => _active,
+                repaint: _activeRepaint,
+              ),
+              child: const SizedBox.expand(),
             ),
-            child: const SizedBox.expand(),
           ),
         ],
       ),

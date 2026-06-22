@@ -9,7 +9,8 @@ void main() {
         widthIndex: 2,
         translation: 'kjv',
         textScaleIndex: 3,
-        ignoreTouch: true);
+        ignoreTouch: true,
+        uiSizeIndex: 2);
     final r = Settings.fromJson(s.toJson());
     expect(r.lastBook, 'Romans');
     expect(r.lastChapter, 8);
@@ -17,6 +18,7 @@ void main() {
     expect(r.translation, 'kjv');
     expect(r.textScaleIndex, 3);
     expect(r.ignoreTouch, isTrue);
+    expect(r.uiSizeIndex, 2);
   });
 
   test('Settings.fromJson fills sensible defaults', () {
@@ -27,6 +29,7 @@ void main() {
     expect(d.translation, 'kjv');
     expect(d.textScaleIndex, 1);
     expect(d.ignoreTouch, isFalse);
+    expect(d.uiSizeIndex, 0);
   });
 
   test('copyWith changes only the given fields', () {

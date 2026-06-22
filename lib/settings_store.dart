@@ -15,6 +15,7 @@ class Settings {
   final String translation; // translation id (see scripture.dart registry)
   final int textScaleIndex; // index into the reader's text-size steps
   final bool ignoreTouch; // palm rejection: ignore finger touches (pen only)
+  final int uiSizeIndex; // toolbar/chrome scale: 0 = Auto (see kUiSizeLabels)
 
   const Settings({
     this.lastBook = 'John',
@@ -23,6 +24,7 @@ class Settings {
     this.translation = 'kjv',
     this.textScaleIndex = 1,
     this.ignoreTouch = false,
+    this.uiSizeIndex = 0,
   });
 
   Settings copyWith({
@@ -32,6 +34,7 @@ class Settings {
     String? translation,
     int? textScaleIndex,
     bool? ignoreTouch,
+    int? uiSizeIndex,
   }) =>
       Settings(
         lastBook: lastBook ?? this.lastBook,
@@ -40,6 +43,7 @@ class Settings {
         translation: translation ?? this.translation,
         textScaleIndex: textScaleIndex ?? this.textScaleIndex,
         ignoreTouch: ignoreTouch ?? this.ignoreTouch,
+        uiSizeIndex: uiSizeIndex ?? this.uiSizeIndex,
       );
 
   Map<String, dynamic> toJson() => {
@@ -50,6 +54,7 @@ class Settings {
         'translation': translation,
         'textScaleIndex': textScaleIndex,
         'ignoreTouch': ignoreTouch,
+        'uiSizeIndex': uiSizeIndex,
       };
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
@@ -59,6 +64,7 @@ class Settings {
         translation: j['translation'] as String? ?? 'kjv',
         textScaleIndex: (j['textScaleIndex'] as num?)?.toInt() ?? 1,
         ignoreTouch: j['ignoreTouch'] as bool? ?? false,
+        uiSizeIndex: (j['uiSizeIndex'] as num?)?.toInt() ?? 0,
       );
 }
 

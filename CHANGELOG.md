@@ -26,6 +26,11 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
   the cloud, so this is the off-device safety net.
 
 ### Changed
+- **Large-screen support**: the toolbar, menus, and controls now scale up on big
+  e-ink panels (e.g. the 13.3" Boox Max), with an "Interface size" override in
+  the menu. Larger print font sizes added. Inking is smoother on long strokes —
+  sub-pixel points are decimated and the in-progress stroke composites on its own
+  layer, so writing near the margins no longer slows down.
 - All saved data (notes, library, plans, settings) is now written **atomically**
   with a backup copy, and notes are flushed the moment a stroke is lifted and
   when the app is backgrounded — protecting against data loss on power loss.
