@@ -166,6 +166,39 @@ double uiScaleFor(BuildContext context) {
   return (shortest / 1100).clamp(1.0, 2.2);
 }
 
+/// Wraps a secondary screen (plans, library, notes, setup, …) so its text and
+/// icons scale by the same [uiScaleFor] factor the reader chrome uses. The
+/// reader itself scales its toolbar manually and keeps the verse area pinned,
+/// so it is deliberately NOT wrapped (a global text scaler would desync the
+/// reader's TextPainter pagination). These screens do no such measuring, so a
+/// MediaQuery textScaler is the simplest way to enlarge everything at once.
+class UiScaled extends StatelessWidget {
+  final Widget child;
+  const UiScaled({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final theme = Theme.of(context);
+    final ui = uiScaleFor(context);
+    return MediaQuery(
+      data: mq.copyWith(textScaler: TextScaler.linear(ui)),
+      child: Theme(
+        // Grow the AppBar so a scaled-up title isn't clipped by the default
+        // 56-dp toolbar, and enlarge default icons to match the text.
+        data: theme.copyWith(
+          appBarTheme: theme.appBarTheme.copyWith(toolbarHeight: 56 * ui),
+          iconTheme: theme.iconTheme.copyWith(size: 24 * ui),
+        ),
+        child: IconTheme.merge(
+          data: IconThemeData(size: 24 * ui),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 /// Verse body style for a printed Bible's locked layout (family/size/spacing).
 TextStyle verseStyleForCfg(BibleConfig c) => appFont(
       c.fontFamily,
@@ -613,10 +646,12 @@ class _RootScreenState extends State<RootScreen> {
   @override
   Widget build(BuildContext context) {
     if (_hasBible) return const BibleReaderScreen();
-    return SetupWizard(onComplete: () async {
-      await DrawingStore.useBible(LibraryStore.active.id);
-      if (mounted) setState(() => _hasBible = true);
-    });
+    return UiScaled(
+      child: SetupWizard(onComplete: () async {
+        await DrawingStore.useBible(LibraryStore.active.id);
+        if (mounted) setState(() => _hasBible = true);
+      }),
+    );
   }
 }
 
@@ -1023,8 +1058,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   Future<void> _openPicker() async {
     final ref = await Navigator.of(context).push<BibleRef>(
       MaterialPageRoute(
-        builder: (_) =>
-            BookPickerScreen(currentBook: _book, currentChapter: _chapter),
+        builder: (_) => UiScaled(
+          child: BookPickerScreen(currentBook: _book, currentChapter: _chapter),
+        ),
       ),
     );
     if (ref == null) return;
@@ -1036,7 +1072,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   // navigates the reader there.
   Future<void> _openScreen(Widget screen) async {
     final ref = await Navigator.of(context).push<BibleRef>(
-      MaterialPageRoute(builder: (_) => screen),
+      MaterialPageRoute(builder: (_) => UiScaled(child: screen)),
     );
     if (ref == null) return;
     _targetVerse = ref.verse;
@@ -1086,7 +1122,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
         await _openUiSizePicker();
       case 'about':
         await Navigator.of(context)
-            .push(MaterialPageRoute(builder: (_) => const AboutScreen()));
+            .push(MaterialPageRoute(
+                builder: (_) => const UiScaled(child: AboutScreen())));
     }
   }
 
@@ -1127,7 +1164,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   // Plans can pop either a PlanSession (start reading the plan) or a BibleRef.
   Future<void> _openPlans() async {
     final result = await Navigator.of(context)
-        .push<Object>(MaterialPageRoute(builder: (_) => const PlansScreen()));
+        .push<Object>(MaterialPageRoute(
+            builder: (_) => const UiScaled(child: PlansScreen())));
     if (!mounted || result == null) return;
     if (result is PlanSession) {
       _startPlanSession(result);
@@ -1139,7 +1177,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
 
   Future<void> _openLibrary() async {
     final changed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => const LibraryScreen()),
+      MaterialPageRoute(builder: (_) => const UiScaled(child: LibraryScreen())),
     );
     if (changed == true && mounted) await _switchToActiveBible();
   }
@@ -2255,7 +2293,8 @@ class _PlansScreenState extends State<PlansScreen> {
 
   Future<void> _newPlan() async {
     final config = await Navigator.of(context).push<PlanConfig>(
-      MaterialPageRoute(builder: (_) => const PlanBuilderScreen()),
+      MaterialPageRoute(
+          builder: (_) => const UiScaled(child: PlanBuilderScreen())),
     );
     if (config == null || !mounted) return;
     final sp = PlanStore.create(config, planLength(config));
@@ -3305,7 +3344,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Future<void> _printNew() async {
     final created = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => const SetupWizard()),
+      MaterialPageRoute(builder: (_) => const UiScaled(child: SetupWizard())),
     );
     if (created == true && mounted) Navigator.of(context).pop(true);
   }
