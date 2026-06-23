@@ -24,6 +24,9 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
 - **Backup & restore**: export everything (Bibles, notes, plans, settings) to a
   single file via the share sheet, and restore it later. Nothing is stored in
   the cloud, so this is the off-device safety net.
+- **Start a reading plan anywhere**: the plan builder has a "Start from" book/
+  chapter picker, with a toggle to either wrap around and still cover the whole
+  Bible or stop at the end (a shorter plan from that point on).
 
 ### Changed
 - **Large-screen support**: the toolbar, menus, and controls now scale up on big

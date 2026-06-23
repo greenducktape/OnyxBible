@@ -322,12 +322,26 @@ class PlanConfig {
   /// Old Testament ordering (ignored when [newTestamentOnly]).
   final PlanOrdering ordering;
 
+  /// Optional starting point in the reading track. Empty [startBook] = begin at
+  /// the natural start (Genesis / Matthew). When set, the track is offset to
+  /// begin at this book/chapter.
+  final String startBook;
+  final int startChapter;
+
+  /// How a partway start covers the rest: when true, read to the end then wrap
+  /// back to the beginning so the whole track is still covered; when false, stop
+  /// at the end of the track (a shorter plan that skips what came before).
+  final bool wrapAround;
+
   const PlanConfig({
     this.chaptersPerDay = 3,
     this.crossReferenced = true,
     this.dailyPsalm = false,
     this.newTestamentOnly = false,
     this.ordering = PlanOrdering.canonical,
+    this.startBook = '',
+    this.startChapter = 1,
+    this.wrapAround = true,
   });
 
   PlanConfig copyWith({
@@ -336,6 +350,9 @@ class PlanConfig {
     bool? dailyPsalm,
     bool? newTestamentOnly,
     PlanOrdering? ordering,
+    String? startBook,
+    int? startChapter,
+    bool? wrapAround,
   }) =>
       PlanConfig(
         chaptersPerDay: chaptersPerDay ?? this.chaptersPerDay,
@@ -343,6 +360,9 @@ class PlanConfig {
         dailyPsalm: dailyPsalm ?? this.dailyPsalm,
         newTestamentOnly: newTestamentOnly ?? this.newTestamentOnly,
         ordering: ordering ?? this.ordering,
+        startBook: startBook ?? this.startBook,
+        startChapter: startChapter ?? this.startChapter,
+        wrapAround: wrapAround ?? this.wrapAround,
       );
 
   Map<String, dynamic> toJson() => {
@@ -351,6 +371,9 @@ class PlanConfig {
         'dailyPsalm': dailyPsalm,
         'newTestamentOnly': newTestamentOnly,
         'ordering': ordering.name,
+        'startBook': startBook,
+        'startChapter': startChapter,
+        'wrapAround': wrapAround,
       };
 
   factory PlanConfig.fromJson(Map<String, dynamic> j) => PlanConfig(
@@ -362,7 +385,13 @@ class PlanConfig {
           (o) => o.name == j['ordering'],
           orElse: () => PlanOrdering.canonical,
         ),
+        startBook: j['startBook'] as String? ?? '',
+        startChapter: (j['startChapter'] as num?)?.toInt() ?? 1,
+        wrapAround: j['wrapAround'] as bool? ?? true,
       );
+
+  /// True when the plan begins somewhere other than the natural start.
+  bool get hasCustomStart => startBook.isNotEmpty;
 
   /// A short, human title summarising the choices.
   String get title {
@@ -430,7 +459,23 @@ List<BibleRef> _mainTrack(PlanConfig c) {
   } else {
     main = [..._otChapters(c.ordering), ...chaptersOfTestament(oldTestament: false)];
   }
-  return c.dailyPsalm ? _withoutPsalms(main) : main;
+  if (c.dailyPsalm) main = _withoutPsalms(main);
+  return _applyStart(main, c);
+}
+
+/// Offsets [track] to begin at the config's chosen start. Finds the first
+/// chapter at-or-after (startBook, startChapter); when wrapAround the tail is
+/// moved to the front (whole track still covered), otherwise the earlier part
+/// is dropped (a shorter plan). Unknown/absent start = unchanged.
+List<BibleRef> _applyStart(List<BibleRef> track, PlanConfig c) {
+  if (!c.hasCustomStart || track.isEmpty) return track;
+  var i = track.indexWhere(
+      (r) => r.book == c.startBook && r.chapter >= c.startChapter);
+  if (i < 0) i = track.indexWhere((r) => r.book == c.startBook);
+  if (i <= 0) return track; // not found, or already at the front
+  return c.wrapAround
+      ? [...track.sublist(i), ...track.sublist(0, i)]
+      : track.sublist(i);
 }
 
 /// How many reading-days [config] produces — computable without the graph, so
@@ -596,7 +641,7 @@ String narrativeFor(PlanConfig config) {
         ? ', with a Psalm every day to carry the prayers of Israel alongside '
             'the life of the church.'
         : '.');
-    return b.toString();
+    return b.toString() + _startSuffix(config);
   }
 
   if (!config.crossReferenced) {
@@ -604,7 +649,7 @@ String narrativeFor(PlanConfig config) {
         'This plan reads the whole Bible from Genesis to Revelation in $dur, '
         '$cpd chapter${cpd == 1 ? '' : 's'} a day, in order');
     b.write(psalm ? ', with a Psalm every day.' : '.');
-    return b.toString();
+    return b.toString() + _startSuffix(config);
   }
 
   // The flagship: cross-referenced whole-Bible plan.
@@ -622,5 +667,15 @@ String narrativeFor(PlanConfig config) {
   b.write('. Every day also includes a short New Testament passage chosen '
       "because Scripture itself echoes the day's Old Testament reading — so "
       'you keep seeing how the Bible is one story pointing to Jesus.');
-  return b.toString();
+  return b.toString() + _startSuffix(config);
+}
+
+/// Trailing sentence describing a non-default starting point, or '' for none.
+String _startSuffix(PlanConfig c) {
+  if (!c.hasCustomStart) return '';
+  final where = '${c.startBook} ${c.startChapter}';
+  return c.wrapAround
+      ? ' It starts at $where and wraps back around, so you still cover '
+          'everything before it.'
+      : ' It starts at $where and runs to the end.';
 }

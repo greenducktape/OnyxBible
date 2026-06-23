@@ -2948,6 +2948,22 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
 
   void _set(PlanConfig next) => setState(() => _c = next);
 
+  // Opens the book picker to choose where the plan begins.
+  Future<void> _pickStart() async {
+    final ref = await Navigator.of(context).push<BibleRef>(
+      MaterialPageRoute(
+        builder: (_) => UiScaled(
+          child: BookPickerScreen(
+            currentBook: _c.hasCustomStart ? _c.startBook : 'Genesis',
+            currentChapter: _c.hasCustomStart ? _c.startChapter : 1,
+          ),
+        ),
+      ),
+    );
+    if (ref == null || !mounted) return;
+    _set(_c.copyWith(startBook: ref.book, startChapter: ref.chapter));
+  }
+
   // Day-1 passages for the preview. Needs the graph for the NT pairing.
   PlanDay? get _firstDay {
     final g = _graph;
@@ -3049,6 +3065,55 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
               ),
             ),
           ],
+
+          _builderLabel('START FROM'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: InkWell(
+              onTap: _pickStart,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+                decoration: BoxDecoration(
+                  border: Border.all(color: kDisabled),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                          _c.hasCustomStart
+                              ? '${_c.startBook} ${_c.startChapter}'
+                              : 'The beginning',
+                          style: kTitleStyle(17, weight: FontWeight.w500)),
+                    ),
+                    if (_c.hasCustomStart)
+                      GestureDetector(
+                        onTap: () => _set(
+                            _c.copyWith(startBook: '', startChapter: 1)),
+                        child: const Padding(
+                          padding: EdgeInsets.only(right: 10),
+                          child: Icon(Icons.close, size: 18, color: kMuted),
+                        ),
+                      ),
+                    const Icon(Icons.menu_book_outlined,
+                        size: 20, color: kMuted),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (_c.hasCustomStart)
+            _switchTile(
+              title: 'Cover the whole Bible',
+              subtitle: _c.wrapAround
+                  ? 'After the end, wrap back to the start so nothing is '
+                      'skipped.'
+                  : 'Stop at the end — this plan skips what comes before your '
+                      'starting point.',
+              value: _c.wrapAround,
+              onChanged: (v) => _set(_c.copyWith(wrapAround: v)),
+            ),
 
           const SizedBox(height: 26),
           Padding(

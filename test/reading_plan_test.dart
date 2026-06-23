@@ -118,6 +118,34 @@ void main() {
       expect(day1.passages.any((r) => !_isOt(r)), isTrue);
     });
 
+    test('custom start (wrap-around) begins at the chosen book, covers all OT',
+        () {
+      final plan = generatePlan(graph,
+          const PlanConfig(chaptersPerDay: 1, startBook: '2 Kings'));
+      expect(plan.days.first.passages.first, const BibleRef('2 Kings', 1));
+      // Wrapping back to Genesis means every OT chapter is still read once.
+      final ot = plan.days.expand((d) => d.passages).where(_isOt).toList();
+      expect(ot.toSet().length, 929);
+    });
+
+    test('custom start (no wrap) runs to the end and skips earlier books', () {
+      final plan = generatePlan(
+          graph,
+          const PlanConfig(
+              chaptersPerDay: 1, startBook: '2 Kings', wrapAround: false));
+      expect(plan.days.first.passages.first, const BibleRef('2 Kings', 1));
+      final ot = plan.days.expand((d) => d.passages).where(_isOt).toSet();
+      expect(ot.contains(const BibleRef('2 Kings', 1)), isTrue);
+      expect(ot.contains(const BibleRef('Genesis', 1)), isFalse); // skipped
+    });
+
+    test('planLength shrinks for a no-wrap partway start', () {
+      final full = planLength(const PlanConfig(chaptersPerDay: 1));
+      final partial = planLength(const PlanConfig(
+          chaptersPerDay: 1, startBook: '2 Kings', wrapAround: false));
+      expect(partial, lessThan(full));
+    });
+
     test('NT echo dataset, when present, beats raw chapter affinity', () {
       // Synthetic data: Genesis 1's strongest *chapter* link is Matthew 1, but
       // the echoes asset says Hebrews 11:1-3 is the densest verse range. The
