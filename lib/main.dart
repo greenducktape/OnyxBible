@@ -116,14 +116,33 @@ const Color kMuted = Color(0xFF5F5F5F);
 const Color kDisabled = Color(0xFFB4B4B4);
 const Color kPaper = Color(0xFFFFFFFF);
 
-// Reading layout. The measure is capped so lines stay comfortable on large
-// (10"+) Boox screens, and the column is centred on whatever space remains.
-const double kMaxContentWidth = 640;
+// Reading layout. The page content fills the available width (minus a fixed
+// side padding); the chosen margin fraction — not a hard cap — decides how much
+// of that is text vs. blank writing margin, so what you pick at setup is what
+// you see. A little more room up top keeps the first line off the toolbar.
 const double kHPadding = 24;
 const double kGutterWidth = 34; // left margin holding the verse number
 const double kVerseSpacing = 12; // gap below each verse
-const double kChapterHeaderHeight = 144; // reserved on the first page only
-const EdgeInsets kPageVPadding = EdgeInsets.symmetric(vertical: 16);
+const double kChapterHeaderHeight = 96; // reserved on the first page only
+const EdgeInsets kPageVPadding = EdgeInsets.fromLTRB(0, 26, 0, 16);
+
+/// Page geometry shared by the reader and the setup-wizard preview, so the two
+/// can never disagree about how wide the text column and writing margin are.
+class ReadingMetrics {
+  final double contentWidth; // the page content block (centred in the view)
+  final double textWidth; // the text column; the rest is blank writing margin
+  const ReadingMetrics(this.contentWidth, this.textWidth);
+}
+
+ReadingMetrics readingMetricsFor(
+  double contentWidth, {
+  required double marginFraction,
+  required bool showVerseNumbers,
+}) {
+  final gutter = showVerseNumbers ? kGutterWidth : 0.0;
+  final textColumn = contentWidth * marginFraction;
+  return ReadingMetrics(contentWidth, math.max(0.0, textColumn - gutter));
+}
 
 // --- Shared typography ----------------------------------------------------
 //
@@ -816,6 +835,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   bool _isLoading = true;
   bool _hasError = false;
 
+  // Opens the left menu drawer from the burger button.
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   // Drawing tools. A wider range of nib sizes; default to a fine line.
   static const List<double> _widths = [1.0, 1.5, 2.0, 3.0, 4.5, 6.0];
   int _widthIndex = 1;
@@ -1079,36 +1101,58 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     _goToChapter(ref.book, ref.chapter);
   }
 
-  Future<void> _openMenu() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
+  // The burger opens a Drawer from the LEFT — where the button is — instead of
+  // sliding up from the bottom.
+  void _openMenu() => _scaffoldKey.currentState?.openDrawer();
+
+  static const List<(String, IconData, String)> _menuItems = [
+    ('search', Icons.search, 'Search'),
+    ('plans', Icons.event_note, 'Reading plans'),
+    ('notes', Icons.gesture, 'My notes'),
+    ('library', Icons.auto_stories_outlined, 'My Bibles'),
+    ('uisize', Icons.format_size, 'Interface size'),
+    ('about', Icons.info_outline, 'About'),
+  ];
+
+  Widget _buildDrawer() {
+    return Drawer(
       backgroundColor: kPaper,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(2)),
-      ),
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final item in const [
-              ('search', Icons.search, 'Search'),
-              ('plans', Icons.event_note, 'Reading plans'),
-              ('notes', Icons.gesture, 'My notes'),
-              ('library', Icons.auto_stories_outlined, 'My Bibles'),
-              ('uisize', Icons.format_size, 'Interface size'),
-              ('about', Icons.info_outline, 'About'),
-            ])
-              ListTile(
-                leading: Icon(item.$2, color: kInk, size: 24 * _ui),
-                title: Text(item.$3, style: kTitleStyle(18 * _ui)),
-                onTap: () => Navigator.of(context).pop(item.$1),
+      shape: const RoundedRectangleBorder(), // flat edge, no e-ink-unfriendly radius
+      child: SafeArea(
+        child: Builder(
+          builder: (ctx) => Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(20 * _ui, 20 * _ui, 20, 12 * _ui),
+                child: Text(kAppName,
+                    style: kTitleStyle(22 * _ui, weight: FontWeight.w700)),
               ),
-            SizedBox(height: 8 * _ui),
-          ],
+              const Divider(height: 1, color: kDisabled),
+              Expanded(
+                child: ListView(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    for (final item in _menuItems)
+                      ListTile(
+                        leading: Icon(item.$2, color: kInk, size: 24 * _ui),
+                        title: Text(item.$3, style: kTitleStyle(18 * _ui)),
+                        onTap: () {
+                          Navigator.of(ctx).pop(); // close the drawer first
+                          _menuAction(item.$1);
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
-    if (!mounted || action == null) return;
+  }
+
+  Future<void> _menuAction(String action) async {
     switch (action) {
       case 'search':
         await _openScreen(SearchScreen(translationId: _source.translationId));
@@ -1121,39 +1165,31 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
       case 'uisize':
         await _openUiSizePicker();
       case 'about':
-        await Navigator.of(context)
-            .push(MaterialPageRoute(
-                builder: (_) => const UiScaled(child: AboutScreen())));
+        await Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => const UiScaled(child: AboutScreen())));
     }
   }
 
-  // Lets the user override the auto chrome scale — handy on big Boox panels
-  // where the device under-reports its density and controls look small.
+  // Interface size is a centred dialog (spatially neutral), not another bottom
+  // sheet — handy on big Boox panels where the device under-reports its density.
   Future<void> _openUiSizePicker() async {
     final current = SettingsStore.value.uiSizeIndex
         .clamp(0, kUiSizeLabels.length - 1)
         .toInt();
-    final picked = await showModalBottomSheet<int>(
+    final picked = await showDialog<int>(
       context: context,
-      backgroundColor: kPaper,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Text('Interface size', style: kTitleStyle(16 * _ui)),
+      builder: (context) => SimpleDialog(
+        backgroundColor: kPaper,
+        title: Text('Interface size', style: kTitleStyle(18 * _ui)),
+        children: [
+          for (var i = 0; i < kUiSizeLabels.length; i++)
+            ListTile(
+              leading: Icon(i == current ? Icons.check : Icons.format_size,
+                  color: i == current ? kInk : kMuted, size: 24 * _ui),
+              title: Text(kUiSizeLabels[i], style: kTitleStyle(18 * _ui)),
+              onTap: () => Navigator.of(context).pop(i),
             ),
-            for (var i = 0; i < kUiSizeLabels.length; i++)
-              ListTile(
-                leading: Icon(i == current ? Icons.check : Icons.format_size,
-                    color: i == current ? kInk : kMuted, size: 24 * _ui),
-                title: Text(kUiSizeLabels[i], style: kTitleStyle(18 * _ui)),
-                onTap: () => Navigator.of(context).pop(i),
-              ),
-            SizedBox(height: 8 * _ui),
-          ],
-        ),
+        ],
       ),
     );
     if (picked == null || !mounted) return;
@@ -1243,26 +1279,43 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   Widget build(BuildContext context) {
     _ui = uiScaleFor(context);
     return Scaffold(
+      key: _scaffoldKey,
+      drawerEnableOpenDragGesture: false, // don't fight edge finger page-turns
+      drawer: _buildDrawer(),
       body: SafeArea(
         bottom: false,
         child: Column(
           children: [
             _buildUnifiedBar(),
-            if (_showNibs) _buildNibRow(),
             // The pen-capture area is ONLY the page, so native ink can't land
             // on the toolbar. Canvas takes all remaining height — no bottom bar.
+            // The nib row FLOATS over the top of the canvas (a Stack overlay)
+            // rather than a Column child, so toggling it never changes the
+            // canvas height or reflows the page mid-write.
             Expanded(
-              child: OnyxSdkPenArea(
-                // A 1ms flip of refreshDelay triggers a native full e-ink
-                // refresh that clears pen ghosting after page/chapter changes.
-                refreshDelay: Duration(milliseconds: 1200 + (_refreshTick % 2)),
-                // Active pen preset chooses the native style. The default
-                // ballpoint is uniform-width, so the committed Flutter stroke
-                // matches the live preview (no post-refresh fattening).
-                strokeStyle: _preset.nativeStyle,
-                strokeColor: _isEraser ? Colors.white : Colors.black,
-                strokeWidth: _penWidth,
-                child: _buildBody(),
+              child: Stack(
+                children: [
+                  OnyxSdkPenArea(
+                    // A 1ms flip of refreshDelay triggers a native full e-ink
+                    // refresh that clears pen ghosting after page/chapter changes.
+                    refreshDelay:
+                        Duration(milliseconds: 1200 + (_refreshTick % 2)),
+                    // Active pen preset chooses the native style. The default
+                    // ballpoint is uniform-width, so the committed Flutter
+                    // stroke matches the live preview (no post-refresh fattening).
+                    strokeStyle: _preset.nativeStyle,
+                    strokeColor: _isEraser ? Colors.white : Colors.black,
+                    strokeWidth: _penWidth,
+                    child: _buildBody(),
+                  ),
+                  if (_showNibs)
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: _buildNibRow(),
+                    ),
+                ],
               ),
             ),
           ],
@@ -1322,23 +1375,21 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
               ),
             ),
           ],
-          // With palm rejection on, finger side-taps are off, so surface the
-          // page arrows here as the way to turn pages.
-          if (_ignoreTouch) ...[
-            SizedBox(width: 4 * _ui),
-            IconButton(
-              tooltip: 'Previous page',
-              icon: Icon(Icons.chevron_left, size: 24 * _ui),
-              color: kInk,
-              onPressed: _prevPage,
-            ),
-            IconButton(
-              tooltip: 'Next page',
-              icon: Icon(Icons.chevron_right, size: 24 * _ui),
-              color: kInk,
-              onPressed: _nextPage,
-            ),
-          ],
+          // Page arrows are always present (a button alternative to the
+          // finger edge-taps), so toggling palm rejection never reflows the bar.
+          SizedBox(width: 4 * _ui),
+          IconButton(
+            tooltip: 'Previous page',
+            icon: Icon(Icons.chevron_left, size: 24 * _ui),
+            color: kInk,
+            onPressed: _prevPage,
+          ),
+          IconButton(
+            tooltip: 'Next page',
+            icon: Icon(Icons.chevron_right, size: 24 * _ui),
+            color: kInk,
+            onPressed: _nextPage,
+          ),
           const Spacer(),
           ValueListenableBuilder<bool>(
             valueListenable: kUndo.canUndo,
@@ -1552,11 +1603,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
 
     return _withFingerPageTurn(LayoutBuilder(
       builder: (context, constraints) {
-        final contentWidth =
-            math.min(constraints.maxWidth - kHPadding * 2, kMaxContentWidth);
-        final gutter = _cfg.showVerseNumbers ? kGutterWidth : 0.0;
-        final textColumn = contentWidth * _marginFraction; // rest = writing margin
-        final textWidth = textColumn - gutter;
+        final content = math.max(0.0, constraints.maxWidth - kHPadding * 2);
+        final m = readingMetricsFor(content,
+            marginFraction: _marginFraction,
+            showVerseNumbers: _cfg.showVerseNumbers);
+        final contentWidth = m.contentWidth;
+        final textWidth = m.textWidth;
         final availableHeight = constraints.maxHeight - kPageVPadding.vertical;
         final verseStyle = _verseStyle;
         final headerReserve = _cfg.showHeadings ? kChapterHeaderHeight : 0.0;
@@ -3654,7 +3706,10 @@ class _SetupWizardState extends State<SetupWizard> {
           borderRadius: BorderRadius.circular(8),
         ),
         child: LayoutBuilder(builder: (context, c) {
-          final textColumn = c.maxWidth * kMarginFractions[_margin];
+          // Same split the reader uses, so the preview matches the printed page.
+          final m = readingMetricsFor(c.maxWidth,
+              marginFraction: kMarginFractions[_margin],
+              showVerseNumbers: _verseNumbers);
           return Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -3665,7 +3720,7 @@ class _SetupWizardState extends State<SetupWizard> {
                       textAlign: TextAlign.right, style: kVerseNumberStyle),
                 ),
               SizedBox(
-                width: textColumn - (_verseNumbers ? kGutterWidth : 0),
+                width: m.textWidth,
                 child: Text(
                     'In the beginning was the Word, and the Word was with '
                     'God, and the Word was God.',
