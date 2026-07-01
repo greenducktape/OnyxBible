@@ -49,7 +49,7 @@ class TranslationInfo {
   bool get offline => bundled || private;
 
   /// Builds a private-translation entry from a manifest.json record. The text
-  /// itself lives in assets/bibles_private/<id>.json (gitignored).
+  /// itself lives in `assets/bibles_private/<id>.json` (gitignored).
   factory TranslationInfo.fromManifest(Map<String, dynamic> j) => TranslationInfo(
         id: j['id'] as String,
         displayName: (j['displayName'] as String?) ?? (j['id'] as String),
@@ -208,7 +208,7 @@ class ApiScriptureSource implements ScriptureSource {
 }
 
 /// Reads a locally-added (private) translation from a single bundled JSON file
-/// at assets/bibles_private/<id>.json. Shape:
+/// at `assets/bibles_private/<id>.json`. Shape:
 /// `{ "id": "...", "books": { "Genesis": { "1": [{"v":1,"t":"..."}] } } }`.
 /// The whole file (a few MB) is loaded once and cached in memory.
 class PrivateScriptureSource implements ScriptureSource {
