@@ -14,6 +14,8 @@ void main() {
       lineSpacingIndex: 0,
       showVerseNumbers: false,
       showHeadings: true,
+      dropCaps: true,
+      justify: true,
       createdAt: 123,
       lastBook: 'Romans',
       lastChapter: 8,
@@ -27,8 +29,19 @@ void main() {
     expect(r.marginIndex, 2);
     expect(r.lineSpacingIndex, 0);
     expect(r.showVerseNumbers, isFalse);
+    expect(r.dropCaps, isTrue);
+    expect(r.justify, isTrue);
     expect(r.lastBook, 'Romans');
     expect(r.lastChapter, 8);
+  });
+
+  test('pre-option Bibles keep their locked layout (dropCaps/justify off)', () {
+    // A config saved before these print options existed must not change.
+    final r = BibleConfig.fromJson(const BibleConfig(id: 'old').toJson()
+      ..remove('dropCaps')
+      ..remove('justify'));
+    expect(r.dropCaps, isFalse);
+    expect(r.justify, isFalse);
   });
 
   test('copyWith changes only name and reading position', () {

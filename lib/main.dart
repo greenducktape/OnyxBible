@@ -125,7 +125,8 @@ const double kHPadding = 24;
 const double kGutterWidth = 34; // left margin holding the verse number
 const double kVerseSpacing = 12; // gap below each verse
 const double kChapterHeaderHeight = 96; // reserved on the first page only
-const EdgeInsets kPageVPadding = EdgeInsets.fromLTRB(0, 26, 0, 16);
+// Top margin hosts the running header; the bottom hosts the folio.
+const EdgeInsets kPageVPadding = EdgeInsets.fromLTRB(0, 26, 0, 24);
 
 /// Page geometry shared by the reader and the setup-wizard preview, so the two
 /// can never disagree about how wide the text column and writing margin are.
@@ -227,6 +228,26 @@ TextStyle verseStyleForCfg(BibleConfig c) => appFont(
       color: kInk,
     );
 
+/// The inline span for one verse — shared by pagination measurement and by
+/// [VerseText] rendering so the two can never disagree about line breaks.
+/// With [dropCap] the first letter renders as a decorated initial (a raised
+/// cap, ~1.9x): that grows the first line's box, so measuring the SAME span is
+/// what keeps the printed pages exact.
+TextSpan verseSpan(String text, TextStyle style, {bool dropCap = false}) {
+  if (!dropCap || text.isEmpty) return TextSpan(text: text, style: style);
+  return TextSpan(style: style, children: [
+    TextSpan(
+      text: text[0],
+      style: style.copyWith(
+        fontSize: (style.fontSize ?? 22) * 1.9,
+        height: 1.0,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+    TextSpan(text: text.substring(1)),
+  ]);
+}
+
 /// Plain size-only serif style — used by setup previews and small chrome.
 TextStyle verseStyleOf(double fontSize) =>
     crimson(fontSize: fontSize, height: 1.55, color: kInk);
@@ -241,6 +262,20 @@ final TextStyle kVerseNumberStyle = crimson(
 
 TextStyle kTitleStyle(double size, {FontWeight weight = FontWeight.w600}) =>
     crimson(fontSize: size, fontWeight: weight, color: kInk);
+
+/// A static "working…" mark. An animated spinner repaints at 60fps, which
+/// smears and burns partial refreshes on e-ink; loads here are near-instant
+/// (bundled assets), so a quiet ellipsis is calmer and truer to paper.
+class QuietLoader extends StatelessWidget {
+  const QuietLoader({super.key});
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Text('· · ·',
+            style: crimson(
+                fontSize: 22, color: kMuted, fontWeight: FontWeight.w700)),
+      );
+}
 
 // --- Data Models ----------------------------------------------------------
 
@@ -612,6 +647,21 @@ final UndoController kUndo = UndoController();
 
 // --- Main App -------------------------------------------------------------
 
+/// Route changes appear instantly. Material's slide/fade transitions smear and
+/// ghost on an e-ink panel; a hard cut reads as "the page turned", like paper.
+class _InstantPageTransitions extends PageTransitionsBuilder {
+  const _InstantPageTransitions();
+
+  @override
+  Widget buildTransitions<T>(
+          PageRoute<T> route,
+          BuildContext context,
+          Animation<double> animation,
+          Animation<double> secondaryAnimation,
+          Widget child) =>
+      child;
+}
+
 class BooxBibleApp extends StatelessWidget {
   const BooxBibleApp({super.key});
 
@@ -627,6 +677,9 @@ class BooxBibleApp extends StatelessWidget {
       splashColor: Colors.transparent,
       highlightColor: Colors.transparent,
       hoverColor: Colors.transparent,
+      pageTransitionsTheme: PageTransitionsTheme(builders: {
+        for (final p in TargetPlatform.values) p: const _InstantPageTransitions(),
+      }),
       colorScheme: const ColorScheme.light(
         primary: kInk,
         surface: kPaper,
@@ -966,11 +1019,14 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
 
   void _applyVerses(List<Verse> verses) {
     if (!mounted) return;
+    // A chapter change replaces the whole layout — always clear ghosting.
+    _turnsSinceGc = 0;
     setState(() {
       _verses = verses;
       _isLoading = false;
       _hasError = false;
       _page = 0;
+      _refreshTick++;
     });
     // If a search target is pending, the page is chosen during build instead.
     if (_targetVerse == null) _resetToFirstPage();
@@ -982,7 +1038,32 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     });
   }
 
-  void _forceRefresh() => setState(() => _refreshTick++);
+  void _forceRefresh() {
+    _turnsSinceGc = 0;
+    setState(() => _refreshTick++);
+  }
+
+  /// "GENESIS 4:1–26" — the verse span a page carries, as books print it.
+  String _runningHeader(List<Verse> page) {
+    final first = page.first.number;
+    final last = page.last.number;
+    final range = first == last ? '$first' : '$first–$last';
+    return '${_book.toUpperCase()} $_chapter:$range';
+  }
+
+  // E-ink refresh discipline: a full (GC) refresh flashes the panel black,
+  // which is the single most annoying thing an e-ink app can do on every page
+  // turn. Like a Kindle, we let partial updates carry a handful of turns and
+  // only flash periodically to clear accumulated ghosting. Chapter changes and
+  // the manual refresh button always flash (the whole layout changed).
+  static const int _gcEveryNTurns = 6;
+  int _turnsSinceGc = 0;
+
+  void _pageTurned(int i) {
+    setState(() => _page = i);
+    _turnsSinceGc++;
+    if (_turnsSinceGc >= _gcEveryNTurns) _forceRefresh();
+  }
 
   // --- Navigation ---------------------------------------------------------
 
@@ -1252,7 +1333,10 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
 
     final painter = TextPainter(textDirection: TextDirection.ltr);
     for (final v in verses) {
-      painter.text = TextSpan(text: v.text, style: verseStyle);
+      // The SAME span VerseText renders — a drop cap grows the first line, and
+      // measuring anything else would drift the page breaks.
+      painter.text = verseSpan(v.text, verseStyle,
+          dropCap: _cfg.dropCaps && v.number == 1);
       painter.layout(maxWidth: textWidth);
       final vh = painter.height + kVerseSpacing;
 
@@ -1597,7 +1681,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   Widget _buildBody() {
     if (_isLoading) {
       return _withFingerPageTurn(
-          const Center(child: CircularProgressIndicator(color: kInk)));
+          const QuietLoader());
     }
     if (_hasError) {
       return _withFingerPageTurn(Center(
@@ -1670,15 +1754,45 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
           // page; navigation is via the bottom bar.
           physics: const NeverScrollableScrollPhysics(),
           itemCount: pages.length,
-          onPageChanged: (i) {
-            setState(() => _page = i);
-            _forceRefresh();
-          },
+          onPageChanged: _pageTurned,
           itemBuilder: (context, i) {
             final pageKey = '${_book}_$_chapter#$i';
+            // Chapter-opening pages already announce themselves via the big
+            // chapter header, so the running header would be redundant there.
+            final showRunningHeader = i > 0 || !_cfg.showHeadings;
             return Stack(
               fit: StackFit.expand,
               children: [
+                // Printed-page furniture, set inside the vertical margins: a
+                // running header ("GENESIS 4:1–26") up top and a folio (page
+                // number) at the foot — orientation the way a book gives it.
+                // Both live under the ink layer: you can write over them.
+                if (showRunningHeader && pages[i].isNotEmpty)
+                  Positioned(
+                    top: 7,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Text(
+                        _runningHeader(pages[i]),
+                        style: crimson(
+                            fontSize: 11,
+                            height: 1.0,
+                            letterSpacing: 2,
+                            color: kMuted),
+                      ),
+                    ),
+                  ),
+                Positioned(
+                  bottom: 5,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Text('${i + 1}',
+                        style:
+                            crimson(fontSize: 11, height: 1.0, color: kMuted)),
+                  ),
+                ),
                 // Text content (centered column of pure text).
                 Padding(
                   padding: kPageVPadding,
@@ -1696,6 +1810,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                               verseStyle: verseStyle,
                               textWidth: textWidth,
                               showNumber: _cfg.showVerseNumbers,
+                              dropCap: _cfg.dropCaps && v.number == 1,
+                              justify: _cfg.justify,
                             ),
                         ],
                       ),
@@ -1778,6 +1894,8 @@ class VerseText extends StatelessWidget {
   final TextStyle verseStyle;
   final double textWidth; // width of the text column; the rest is writing margin
   final bool showNumber;
+  final bool dropCap; // decorated initial (chapter's first verse, print option)
+  final bool justify; // justified text, like a printed page
 
   const VerseText({
     super.key,
@@ -1785,6 +1903,8 @@ class VerseText extends StatelessWidget {
     required this.verseStyle,
     required this.textWidth,
     required this.showNumber,
+    this.dropCap = false,
+    this.justify = false,
   });
 
   @override
@@ -1803,7 +1923,16 @@ class VerseText extends StatelessWidget {
                     textAlign: TextAlign.right, style: kVerseNumberStyle),
               ),
             ),
-          SizedBox(width: textWidth, child: Text(verse.text, style: verseStyle)),
+          SizedBox(
+            width: textWidth,
+            child: Text.rich(
+              verseSpan(verse.text, verseStyle, dropCap: dropCap),
+              textAlign: justify ? TextAlign.justify : TextAlign.start,
+              // The layout is "printed": pagination measures unscaled text, so
+              // the system font-size setting must not stretch it here either.
+              textScaler: TextScaler.noScaling,
+            ),
+          ),
           const Spacer(),
         ],
       ),
@@ -1853,6 +1982,7 @@ class _PageInkState extends State<PageInk> {
   static const double _minSegment = 1.3;
   Size? _canvasSize; // reported by the painter; used for capture box + eraser
   final List<Stroke> _erasedThisGesture = [];
+  Offset? _eraserAt; // eraser-tip position while erasing (drives the ring)
 
   @override
   void initState() {
@@ -1902,7 +2032,9 @@ class _PageInkState extends State<PageInk> {
   void _onDown(PointerDownEvent e) {
     if (!_isStylus(e)) return;
     if (_erasing(e)) {
+      _eraserAt = e.localPosition; // show the tool's reach
       _eraseAt(e.localPosition);
+      _activeRepaint.value++;
       return;
     }
     _active = Stroke(
@@ -1918,7 +2050,9 @@ class _PageInkState extends State<PageInk> {
   void _onMove(PointerMoveEvent e) {
     if (!_isStylus(e)) return;
     if (_erasing(e)) {
+      _eraserAt = e.localPosition;
       _eraseAt(e.localPosition);
+      _activeRepaint.value++;
       return;
     }
     if (_active == null) return;
@@ -1938,6 +2072,10 @@ class _PageInkState extends State<PageInk> {
 
   void _onUp(PointerUpEvent e) {
     var changed = false;
+    if (_eraserAt != null) {
+      _eraserAt = null; // hide the eraser ring
+      _activeRepaint.value++;
+    }
     if (_active != null) {
       // Commit even a single-point stroke so a deliberate dot still draws now
       // that sub-pixel moves are decimated away.
@@ -1962,6 +2100,20 @@ class _PageInkState extends State<PageInk> {
     if (changed) unawaited(DrawingStore.flushNow());
   }
 
+  // The system cancelled the gesture (palm classification, app switch, …):
+  // drop the in-progress stroke rather than committing a half-drawn line, but
+  // keep the erase undo record — those strokes are already gone from the store.
+  void _onCancel(PointerCancelEvent e) {
+    _eraserAt = null;
+    _active = null;
+    _activeRepaint.value++;
+    if (_erasedThisGesture.isNotEmpty) {
+      kUndo.recordErase(widget.pageKey, List<Stroke>.of(_erasedThisGesture));
+      _erasedThisGesture.clear();
+      unawaited(DrawingStore.flushNow());
+    }
+  }
+
   void _eraseAt(Offset p) {
     final radius = _eraseRadius * widget.eraseScale;
     final removed = _strokes
@@ -1980,6 +2132,7 @@ class _PageInkState extends State<PageInk> {
       onPointerDown: _onDown,
       onPointerMove: _onMove,
       onPointerUp: _onUp,
+      onPointerCancel: _onCancel,
       behavior: HitTestBehavior.translucent,
       child: Stack(
         fit: StackFit.expand,
@@ -1997,10 +2150,13 @@ class _PageInkState extends State<PageInk> {
           ),
           // In-progress stroke on top, in its own RepaintBoundary so a move
           // rasters only this layer — never the committed ink beneath it.
+          // The same layer shows the eraser's reach as a ring while erasing.
           RepaintBoundary(
             child: CustomPaint(
               painter: _ActivePainter(
                 active: () => _active,
+                eraser: () => _eraserAt,
+                eraseRadius: _eraseRadius * widget.eraseScale,
                 repaint: _activeRepaint,
               ),
               child: const SizedBox.expand(),
@@ -2039,14 +2195,34 @@ class _CommittedPainter extends CustomPainter {
 
 class _ActivePainter extends CustomPainter {
   final Stroke? Function() active;
+  final Offset? Function() eraser;
+  final double eraseRadius;
 
-  _ActivePainter({required this.active, required Listenable repaint})
-      : super(repaint: repaint);
+  _ActivePainter({
+    required this.active,
+    required this.eraser,
+    required this.eraseRadius,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
     final a = active();
     if (a != null) _paintStroke(canvas, a, size);
+    // While erasing, show the tool's reach — a thin ring, like the shadow of a
+    // physical eraser held against the page.
+    final e = eraser();
+    if (e != null) {
+      canvas.drawCircle(
+        e,
+        eraseRadius,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..isAntiAlias = false
+          ..color = kMuted,
+      );
+    }
   }
 
   @override
@@ -2416,7 +2592,7 @@ class _PlansScreenState extends State<PlansScreen> {
             : BackButton(onPressed: () => setState(() => _detailId = null)),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: kInk))
+          ? const QuietLoader()
           : (detail == null ? _libraryView() : _detailView(detail)),
     );
   }
@@ -3409,7 +3585,7 @@ class _SearchScreenState extends State<SearchScreen> {
         if (_loading)
           const Padding(
             padding: EdgeInsets.all(28),
-            child: Center(child: CircularProgressIndicator(color: kInk)),
+            child: QuietLoader(),
           ),
         if (!_loading && _searched && _hits.isEmpty && _ref == null)
           const Padding(
@@ -3552,6 +3728,8 @@ class _SetupWizardState extends State<SetupWizard> {
   int _spacing = 1;
   bool _verseNumbers = true;
   bool _headings = true;
+  bool _dropCaps = true; // decorated chapter initials — on for new prints
+  bool _justify = false;
   final TextEditingController _name = TextEditingController();
   bool _printing = false;
 
@@ -3578,6 +3756,8 @@ class _SetupWizardState extends State<SetupWizard> {
       lineSpacingIndex: _spacing,
       showVerseNumbers: _verseNumbers,
       showHeadings: _headings,
+      dropCaps: _dropCaps,
+      justify: _justify,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     ));
     await Future<void>.delayed(const Duration(milliseconds: 900)); // a beat
@@ -3754,10 +3934,15 @@ class _SetupWizardState extends State<SetupWizard> {
                 ),
               SizedBox(
                 width: m.textWidth,
-                child: Text(
-                    'In the beginning was the Word, and the Word was with '
-                    'God, and the Word was God.',
-                    style: _sampleStyle()),
+                child: Text.rich(
+                  verseSpan(
+                      'In the beginning was the Word, and the Word was with '
+                      'God, and the Word was God.',
+                      _sampleStyle(),
+                      dropCap: _dropCaps),
+                  textAlign: _justify ? TextAlign.justify : TextAlign.start,
+                  textScaler: TextScaler.noScaling,
+                ),
               ),
               const Spacer(),
             ],
@@ -3860,6 +4045,25 @@ class _SetupWizardState extends State<SetupWizard> {
             value: _headings,
             onChanged: (v) => setState(() => _headings = v),
           ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            activeThumbColor: kInk,
+            title: Text('Decorated chapter initials', style: kTitleStyle(18)),
+            subtitle: Text('A large first letter opens each chapter',
+                style: crimson(fontSize: 13, color: kMuted)),
+            value: _dropCaps,
+            onChanged: (v) => setState(() => _dropCaps = v),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            activeThumbColor: kInk,
+            title: Text('Justified text', style: kTitleStyle(18)),
+            subtitle: Text('Even edges on both sides, like a printed page',
+                style: crimson(fontSize: 13, color: kMuted)),
+            value: _justify,
+            onChanged: (v) => setState(() => _justify = v),
+          ),
+          _preview(),
           const SizedBox(height: 16),
           TextField(
             controller: _name,
@@ -3888,6 +4092,8 @@ class _SetupWizardState extends State<SetupWizard> {
           _summaryRow('Line spacing', kLineSpacingLabels[_spacing]),
           _summaryRow('Verse numbers', _verseNumbers ? 'On' : 'Off'),
           _summaryRow('Chapter headings', _headings ? 'On' : 'Off'),
+          _summaryRow('Chapter initials', _dropCaps ? 'On' : 'Off'),
+          _summaryRow('Justified text', _justify ? 'On' : 'Off'),
           if (_name.text.trim().isNotEmpty)
             _summaryRow('Name', _name.text.trim()),
           const SizedBox(height: 16),

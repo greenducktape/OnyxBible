@@ -32,7 +32,17 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
   `tool/build_private_translation.py`; they appear in the setup wizard and are
   readable/searchable offline. They can never be committed to the repo.
 
+- **Print craft**: a running header ("GENESIS 4:1–26") and a folio page number
+  are set into each page's margins, and two new print-time options — decorated
+  chapter initials (drop caps) and justified text — give new Bibles a genuinely
+  book-like page. Existing printed Bibles are untouched.
+- **Eraser ring**: while erasing, a thin ring shows the eraser's reach.
+
 ### Changed
+- **E-ink refresh discipline**: page turns no longer flash the panel black every
+  time — partial updates carry several turns and a full refresh runs every 6th
+  turn and on chapter changes. Loading spinners are static now, and screen
+  changes cut instantly instead of animating (no smearing).
 - **Cleaner navigation**: the menu opens as a left drawer (where the burger is),
   Interface size is a centred dialog, the page arrows are always in the bar (no
   more shifting when toggling palm rejection), and the nib-size row floats over

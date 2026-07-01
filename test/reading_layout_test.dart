@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:boox_bible/main.dart';
 
@@ -22,5 +23,23 @@ void main() {
     final b =
         readingMetricsFor(640, marginFraction: 0.68, showVerseNumbers: true);
     expect(a.textWidth, b.textWidth);
+  });
+
+  test('verseSpan without a drop cap is the plain verse text', () {
+    final span = verseSpan('In the beginning', kVerseStyle);
+    expect(span.text, 'In the beginning');
+    expect(span.children, isNull);
+  });
+
+  test('verseSpan with a drop cap enlarges exactly the first letter', () {
+    final span = verseSpan('In the beginning', kVerseStyle, dropCap: true);
+    final parts = span.children!.cast<TextSpan>();
+    expect(parts, hasLength(2));
+    expect(parts[0].text, 'I');
+    expect(parts[0].style!.fontSize,
+        closeTo(kVerseStyle.fontSize! * 1.9, 0.001));
+    expect(parts[1].text, 'n the beginning');
+    // Pagination measures this same span, so rendering can never drift from
+    // the measured page breaks.
   });
 }

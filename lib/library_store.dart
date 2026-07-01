@@ -20,6 +20,8 @@ class BibleConfig {
   final int lineSpacingIndex; // index into the reader's line-spacing options
   final bool showVerseNumbers;
   final bool showHeadings;
+  final bool dropCaps; // decorated initial on each chapter's first verse
+  final bool justify; // justified text, like a printed page
   final int createdAt; // epoch ms
   final String lastBook; // reading position (mutable post-print)
   final int lastChapter;
@@ -34,6 +36,8 @@ class BibleConfig {
     this.lineSpacingIndex = 1,
     this.showVerseNumbers = true,
     this.showHeadings = true,
+    this.dropCaps = false,
+    this.justify = false,
     this.createdAt = 0,
     this.lastBook = 'John',
     this.lastChapter = 1,
@@ -54,6 +58,8 @@ class BibleConfig {
         lineSpacingIndex: lineSpacingIndex,
         showVerseNumbers: showVerseNumbers,
         showHeadings: showHeadings,
+        dropCaps: dropCaps,
+        justify: justify,
         createdAt: createdAt,
         lastBook: lastBook ?? this.lastBook,
         lastChapter: lastChapter ?? this.lastChapter,
@@ -69,6 +75,8 @@ class BibleConfig {
         'lineSpacingIndex': lineSpacingIndex,
         'showVerseNumbers': showVerseNumbers,
         'showHeadings': showHeadings,
+        'dropCaps': dropCaps,
+        'justify': justify,
         'createdAt': createdAt,
         'lastBook': lastBook,
         'lastChapter': lastChapter,
@@ -84,6 +92,10 @@ class BibleConfig {
         lineSpacingIndex: (j['lineSpacingIndex'] as num?)?.toInt() ?? 1,
         showVerseNumbers: j['showVerseNumbers'] as bool? ?? true,
         showHeadings: j['showHeadings'] as bool? ?? true,
+        // Both default false so Bibles printed before these options existed
+        // keep their locked layout (and their ink aligned) untouched.
+        dropCaps: j['dropCaps'] as bool? ?? false,
+        justify: j['justify'] as bool? ?? false,
         createdAt: (j['createdAt'] as num?)?.toInt() ?? 0,
         lastBook: j['lastBook'] as String? ?? 'John',
         lastChapter: (j['lastChapter'] as num?)?.toInt() ?? 1,
