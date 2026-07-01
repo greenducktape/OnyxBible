@@ -9,6 +9,13 @@ import 'package:flutter/foundation.dart';
 /// non-fatal notice so silent data loss never goes unannounced.
 bool gDataRecovered = false;
 
+// Serialises writes per target path. Callers fire saves without awaiting them
+// (pen-lift flush, debounce timers), so two writes to the same file can overlap;
+// both would open the SAME `.tmp`, the later open truncating under the earlier
+// writer — and the corrupt result would then be renamed over the good primary.
+// Chaining each path's writes behind the previous one removes the race.
+final Map<String, Future<void>> _writeChains = {};
+
 /// Writes [data] (JSON-encoded) to [file] atomically so a crash or power loss on
 /// an e-ink device can never leave a half-written primary file:
 ///   1. serialise to a sibling `<path>.tmp` and flush it to disk,
@@ -16,7 +23,18 @@ bool gDataRecovered = false;
 ///   3. rename the temp over the target (atomic on the same filesystem).
 /// After a crash the worst case is a stale `.tmp` (ignored) or a readable
 /// `.bak` (used by [readJsonResilient]) — the primary is always whole.
-Future<void> writeJsonAtomic(File file, Object data) async {
+/// Concurrent calls for the same path are queued, never interleaved.
+Future<void> writeJsonAtomic(File file, Object data) {
+  final prev = _writeChains[file.path] ?? Future<void>.value();
+  // Errors are swallowed per link so one failed write can't poison the chain.
+  final next = prev
+      .then((_) => _writeJsonAtomicNow(file, data))
+      .catchError((Object e) => debugPrint('Atomic write failed: $e'));
+  _writeChains[file.path] = next;
+  return next;
+}
+
+Future<void> _writeJsonAtomicNow(File file, Object data) async {
   final encoded = json.encode(data);
   final tmp = File('${file.path}.tmp');
   final raf = await tmp.open(mode: FileMode.write);

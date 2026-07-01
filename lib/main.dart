@@ -1118,6 +1118,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   Widget _buildDrawer() {
     return Drawer(
       backgroundColor: kPaper,
+      width: 304 * _ui, // grow with the chrome scale on big panels
       shape: const RoundedRectangleBorder(), // flat edge, no e-ink-unfriendly radius
       child: SafeArea(
         child: Builder(
@@ -1278,7 +1279,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
 
   @override
   Widget build(BuildContext context) {
-    _ui = uiScaleFor(context);
+    // Cap the chrome scale by the available width so the unified bar (whose
+    // fixed contents need ~800 logical px at scale 1) can never overflow on a
+    // narrow/portrait panel — it shrinks gracefully instead of striping.
+    final width = MediaQuery.of(context).size.width;
+    _ui = math.min(
+        uiScaleFor(context), (width / 800).clamp(0.7, double.infinity));
     return Scaffold(
       key: _scaffoldKey,
       drawerEnableOpenDragGesture: false, // don't fight edge finger page-turns
@@ -1737,18 +1743,25 @@ class ChapterHeader extends StatelessWidget {
             book.toUpperCase(),
             style: crimson(
               fontSize: 13,
+              height: 1.0,
               letterSpacing: 4,
               fontWeight: FontWeight.w600,
               color: kMuted,
             ),
           ),
           const SizedBox(height: 4),
+          // height 1.0 keeps the number's line box equal to its font size so
+          // the whole header provably fits the kChapterHeaderHeight reserve
+          // (13 + 4 + 52 + 8 + 1 = 78 < 96) — no first-page overflow.
           Text(
             '$chapter',
             style: crimson(
-                fontSize: 64, fontWeight: FontWeight.w500, color: kInk),
+                fontSize: 52,
+                height: 1.0,
+                fontWeight: FontWeight.w500,
+                color: kInk),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Container(width: 44, height: 1, color: kInk),
         ],
       ),
@@ -2387,7 +2400,8 @@ class _PlansScreenState extends State<PlansScreen> {
   void _undo() => setState(PlanStore.uncompleteLast);
 
   String _summary(PlanDay d) =>
-      d.passages.map((r) => '${r.book} ${r.chapter}').join('  ·  ');
+      // toString keeps a snippet echo's verse range ("Hebrews 11:1-3") visible.
+      d.passages.map((r) => r.toString()).join('  ·  ');
 
   @override
   Widget build(BuildContext context) {
@@ -2678,8 +2692,7 @@ class _PlansScreenState extends State<PlansScreen> {
                   child: Row(
                     children: [
                       Expanded(
-                        child: Text(
-                            '${day.passages[pi].book} ${day.passages[pi].chapter}',
+                        child: Text('${day.passages[pi]}',
                             style: kTitleStyle(20, weight: FontWeight.w500)),
                       ),
                       Icon(
@@ -3231,7 +3244,7 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
                   color: kMuted)),
           const SizedBox(height: 6),
           Text(
-            day.passages.map((r) => '${r.book} ${r.chapter}').join('   ·   '),
+            day.passages.map((r) => r.toString()).join('   ·   '),
             style: kTitleStyle(18, weight: FontWeight.w500),
           ),
         ],

@@ -65,4 +65,20 @@ void main() {
     expect(r.data, isNull);
     expect(r.recovered, isFalse);
   });
+
+  test('concurrent writes to one path are serialised; last one wins intact',
+      () async {
+    final file = f('data.json');
+    // Fired without awaiting in between — exactly how the stores call it
+    // (pen-lift flush racing the debounce timer). Without per-path chaining
+    // these interleave on the same .tmp and can corrupt the primary.
+    final writes = [
+      for (var i = 0; i < 20; i++)
+        writeJsonAtomic(file, {'seq': i, 'pad': 'x' * 4096})
+    ];
+    await Future.wait(writes);
+    final decoded = json.decode(await file.readAsString());
+    expect(decoded['seq'], 19); // last write, fully intact
+    expect((decoded['pad'] as String).length, 4096);
+  });
 }

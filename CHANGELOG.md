@@ -27,8 +27,17 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
 - **Start a reading plan anywhere**: the plan builder has a "Start from" book/
   chapter picker, with a toggle to either wrap around and still cover the whole
   Bible or stop at the end (a shorter plan from that point on).
+- **Private, local-only translations**: drop legally-obtained copyrighted
+  versions (e.g. NVI, RV1960, LBLA) into a gitignored folder via
+  `tool/build_private_translation.py`; they appear in the setup wizard and are
+  readable/searchable offline. They can never be committed to the repo.
 
 ### Changed
+- **Cleaner navigation**: the menu opens as a left drawer (where the burger is),
+  Interface size is a centred dialog, the page arrows are always in the bar (no
+  more shifting when toggling palm rejection), and the nib-size row floats over
+  the canvas instead of reflowing the page. Printed margins now match what the
+  setup preview shows.
 - **Large-screen support**: the toolbar, menus, and controls now scale up on big
   e-ink panels (e.g. the 13.3" Boox Max), with an "Interface size" override in
   the menu. Larger print font sizes added. Inking is smoother on long strokes —
@@ -40,6 +49,13 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
 
 ### Fixed
 - Long book titles no longer overflow the toolbar.
+- The chapter header no longer overflows its reserved space on the first page.
+- Plan lists now show a snippet echo's verse range ("Hebrews 11:1-3") instead of
+  truncating it to the whole chapter.
+- Rapid pen lifts can no longer race two saves of the notes file into a corrupt
+  write — per-file writes are serialised.
+- The toolbar shrinks gracefully on narrow/portrait screens instead of
+  overflowing.
 
 ## [1.0.0]
 - First sideload-ready build: offline KJV / Reina-Valera 1909 / Luther 1912,
