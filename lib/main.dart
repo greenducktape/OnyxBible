@@ -1361,17 +1361,34 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
             ),
           ),
           if (_session != null) ...[
-            SizedBox(width: 8 * _ui),
-            Text(
-              'Day ${_session!.dayIndex + 1}·${_session!.plan.length}',
-              style: crimson(
-                  fontSize: 12 * _ui, color: kMuted, fontWeight: FontWeight.w600),
-            ),
-            GestureDetector(
-              onTap: () => setState(() => _session = null),
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 4 * _ui),
-                child: Icon(Icons.close, size: 14 * _ui, color: kMuted),
+            SizedBox(width: 6 * _ui),
+            // One compact pill with a proper (>=40px) hit area; tapping leaves
+            // the plan. A single element, so it can't crowd the title into a
+            // tiny × the way two separate glyphs did.
+            Tooltip(
+              message: 'Leave plan',
+              child: InkWell(
+                onTap: () => setState(() => _session = null),
+                borderRadius: BorderRadius.circular(20 * _ui),
+                child: Container(
+                  constraints: BoxConstraints(minHeight: 40 * _ui),
+                  padding: EdgeInsets.symmetric(horizontal: 10 * _ui),
+                  alignment: Alignment.center,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Day ${_session!.dayIndex + 1}/${_session!.plan.length}',
+                        style: crimson(
+                            fontSize: 13 * _ui,
+                            color: kInk,
+                            fontWeight: FontWeight.w600),
+                      ),
+                      SizedBox(width: 6 * _ui),
+                      Icon(Icons.close, size: 15 * _ui, color: kMuted),
+                    ],
+                  ),
+                ),
               ),
             ),
           ],
@@ -3140,13 +3157,15 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
                           style: kTitleStyle(17, weight: FontWeight.w500)),
                     ),
                     if (_c.hasCustomStart)
-                      GestureDetector(
-                        onTap: () => _set(
+                      IconButton(
+                        tooltip: 'Clear start point',
+                        onPressed: () => _set(
                             _c.copyWith(startBook: '', startChapter: 1)),
-                        child: const Padding(
-                          padding: EdgeInsets.only(right: 10),
-                          child: Icon(Icons.close, size: 18, color: kMuted),
-                        ),
+                        icon: const Icon(Icons.close, size: 20, color: kMuted),
+                        constraints:
+                            const BoxConstraints(minWidth: 44, minHeight: 44),
+                        padding: EdgeInsets.zero,
+                        visualDensity: VisualDensity.compact,
                       ),
                     const Icon(Icons.menu_book_outlined,
                         size: 20, color: kMuted),
