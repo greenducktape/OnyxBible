@@ -38,6 +38,7 @@ void main() {
     await OnyxSdkPenArea.init();
     await SettingsStore.init();
     await PlanStore.init();
+    await loadPrivateTranslations(); // register any locally-added versions
     await LibraryStore.init();
     await _bootstrapLibrary();
     if (!LibraryStore.isEmpty) {
@@ -3344,7 +3345,7 @@ class _SearchScreenState extends State<SearchScreen> {
     }
     setState(() => _loading = true);
     final hits =
-        await searchBundledTranslation(widget.translationId, q, limit: 200);
+        await searchTranslation(widget.translationId, q, limit: 200);
     if (!mounted) return;
     setState(() {
       _hits = hits;
@@ -3755,7 +3756,9 @@ class _SetupWizardState extends State<SetupWizard> {
         'Choose a translation',
         'This is the text of your Bible. It cannot be changed once printed.',
         [
-          for (final t in kTranslations.where((t) => t.bundled))
+          // All offline translations: the shipped public-domain ones plus any
+          // private versions you added locally (assets/bibles_private).
+          for (final t in offlineTranslations)
             _radioRow(t.displayName, '${t.language} · ${t.attribution}',
                 _translation == t.id, () => setState(() => _translation = t.id)),
         ],

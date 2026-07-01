@@ -32,7 +32,8 @@ class TranslationInfo {
   final String id; // also the asset folder name, e.g. 'kjv'
   final String displayName;
   final String language;
-  final bool bundled; // true => offline asset; false => fetched via API
+  final bool bundled; // public-domain asset under assets/bibles/<id>/
+  final bool private; // locally-added asset under assets/bibles_private/<id>.json
   final String attribution;
 
   const TranslationInfo({
@@ -41,7 +42,22 @@ class TranslationInfo {
     required this.language,
     required this.bundled,
     required this.attribution,
+    this.private = false,
   });
+
+  /// Available offline on this device (either shipped or locally added).
+  bool get offline => bundled || private;
+
+  /// Builds a private-translation entry from a manifest.json record. The text
+  /// itself lives in assets/bibles_private/<id>.json (gitignored).
+  factory TranslationInfo.fromManifest(Map<String, dynamic> j) => TranslationInfo(
+        id: j['id'] as String,
+        displayName: (j['displayName'] as String?) ?? (j['id'] as String),
+        language: (j['language'] as String?) ?? '',
+        attribution: (j['attribution'] as String?) ?? 'Private / local use',
+        bundled: false,
+        private: true,
+      );
 }
 
 const List<TranslationInfo> kTranslations = [
@@ -71,8 +87,42 @@ const List<TranslationInfo> kTranslations = [
 
 const String kDefaultTranslation = 'kjv';
 
+// Private, locally-added translations discovered at startup from
+// assets/bibles_private/manifest.json. That file (and the translation data it
+// points to) is gitignored, so copyrighted texts never reach the public repo.
+// A public/CI build finds no manifest and lists none.
+List<TranslationInfo> _privateTranslations = const [];
+
+/// Bundled (public-domain) plus any locally-added private translations.
+List<TranslationInfo> get allTranslations =>
+    [...kTranslations, ..._privateTranslations];
+
+/// Every translation available offline on this device (bundled or private) —
+/// what the setup wizard offers.
+List<TranslationInfo> get offlineTranslations =>
+    [for (final t in allTranslations) if (t.offline) t];
+
+/// Replaces the known private translations (used by [loadPrivateTranslations]
+/// and directly by tests).
+void registerPrivateTranslations(List<TranslationInfo> list) =>
+    _privateTranslations = List<TranslationInfo>.unmodifiable(list);
+
+/// Reads the gitignored private manifest, if present, and registers whatever it
+/// lists. Missing/broken manifest => no private translations (public build).
+Future<void> loadPrivateTranslations() async {
+  try {
+    final raw =
+        await rootBundle.loadString('assets/bibles_private/manifest.json');
+    final list = (json.decode(raw) as List).cast<Map<String, dynamic>>();
+    registerPrivateTranslations(
+        [for (final e in list) TranslationInfo.fromManifest(e)]);
+  } catch (_) {
+    registerPrivateTranslations(const []);
+  }
+}
+
 TranslationInfo translationById(String id) =>
-    kTranslations.firstWhere((t) => t.id == id,
+    allTranslations.firstWhere((t) => t.id == id,
         orElse: () => kTranslations.first);
 
 class ScriptureUnavailable implements Exception {
@@ -157,8 +207,58 @@ class ApiScriptureSource implements ScriptureSource {
   }
 }
 
-ScriptureSource sourceFor(TranslationInfo t) =>
-    t.bundled ? BundledScriptureSource(t.id) : ApiScriptureSource(t.id);
+/// Reads a locally-added (private) translation from a single bundled JSON file
+/// at assets/bibles_private/<id>.json. Shape:
+/// `{ "id": "...", "books": { "Genesis": { "1": [{"v":1,"t":"..."}] } } }`.
+/// The whole file (a few MB) is loaded once and cached in memory.
+class PrivateScriptureSource implements ScriptureSource {
+  @override
+  final String translationId;
+  Map<String, dynamic>? _books;
+
+  PrivateScriptureSource(this.translationId);
+
+  Future<Map<String, dynamic>> _load() async {
+    final cached = _books;
+    if (cached != null) return cached;
+    try {
+      final raw = await rootBundle
+          .loadString('assets/bibles_private/$translationId.json');
+      final decoded = json.decode(raw) as Map<String, dynamic>;
+      return _books = (decoded['books'] as Map).cast<String, dynamic>();
+    } catch (_) {
+      throw ScriptureUnavailable(
+          'Private translation "$translationId" not found on this device');
+    }
+  }
+
+  @override
+  Future<List<Verse>> chapter(String book, int chapter) async =>
+      parsePrivateChapter(await _load(), book, chapter);
+}
+
+/// Pure decode of a private translation's `books` map into a chapter's verses.
+/// Separated from asset loading so it can be unit-tested without a bundle.
+List<Verse> parsePrivateChapter(
+    Map<String, dynamic> books, String book, int chapter) {
+  final b = books[book] as Map<String, dynamic>?;
+  if (b == null) throw ScriptureUnavailable('$book not in this translation');
+  final raw = b['$chapter'] as List?;
+  if (raw == null) throw ScriptureUnavailable('$book $chapter not found');
+  return raw.map((e) {
+    final m = e as Map<String, dynamic>;
+    final n = (m['v'] as num).toInt();
+    return Verse(
+        id: verseId(book, chapter, n),
+        number: n,
+        text: (m['t'] as String).trim());
+  }).toList();
+}
+
+ScriptureSource sourceFor(TranslationInfo t) {
+  if (t.private) return PrivateScriptureSource(t.id);
+  return t.bundled ? BundledScriptureSource(t.id) : ApiScriptureSource(t.id);
+}
 
 /// Loads the bundled chapter cross-reference graph used by reading plans.
 Future<XrefGraph> loadXrefGraph() async {
@@ -186,6 +286,59 @@ class SearchHit {
   });
 
   String get reference => '$book $chapter:$verse';
+}
+
+/// Full-text search over any offline translation (bundled or private), routing
+/// to the right store. Callers should use this rather than the bundled-only one.
+Future<List<SearchHit>> searchTranslation(
+  String translationId,
+  String query, {
+  int limit = 200,
+}) async {
+  if (translationById(translationId).private) {
+    return _searchPrivate(translationId, query, limit: limit);
+  }
+  return searchBundledTranslation(translationId, query, limit: limit);
+}
+
+/// Search inside a private translation's single JSON file, canonical order.
+Future<List<SearchHit>> _searchPrivate(
+  String translationId,
+  String query, {
+  int limit = 200,
+}) async {
+  final q = query.trim().toLowerCase();
+  if (q.isEmpty) return const [];
+  Map<String, dynamic> books;
+  try {
+    final raw = await rootBundle
+        .loadString('assets/bibles_private/$translationId.json');
+    books = ((json.decode(raw) as Map<String, dynamic>)['books'] as Map)
+        .cast<String, dynamic>();
+  } catch (_) {
+    return const [];
+  }
+  final hits = <SearchHit>[];
+  for (final book in kBibleBooks) {
+    final chapters = books[book.name] as Map<String, dynamic>?;
+    if (chapters == null) continue;
+    for (final entry in chapters.entries) {
+      final ch = int.parse(entry.key);
+      for (final v in entry.value as List) {
+        final m = v as Map<String, dynamic>;
+        final text = m['t'] as String;
+        if (text.toLowerCase().contains(q)) {
+          hits.add(SearchHit(
+              book: book.name,
+              chapter: ch,
+              verse: (m['v'] as num).toInt(),
+              text: text));
+          if (hits.length >= limit) return hits;
+        }
+      }
+    }
+  }
+  return hits;
 }
 
 /// Case-insensitive full-text search over a bundled translation. Scans book

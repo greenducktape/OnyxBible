@@ -1,0 +1,20 @@
+[
+  {
+    "id": "nvi",
+    "displayName": "Nueva Versión Internacional",
+    "language": "Español",
+    "attribution": "© Biblica, Inc. — Uso privado/local, no distribuir."
+  },
+  {
+    "id": "rv1960",
+    "displayName": "Reina-Valera 1960",
+    "language": "Español",
+    "attribution": "© Sociedades Bíblicas Unidas — Uso privado/local, no distribuir."
+  },
+  {
+    "id": "lbla",
+    "displayName": "La Biblia de las Américas",
+    "language": "Español",
+    "attribution": "© The Lockman Foundation — Uso privado/local, no distribuir."
+  }
+]

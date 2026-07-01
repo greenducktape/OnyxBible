@@ -74,6 +74,10 @@ flutter:
     - assets/bibles/kjv/
     - assets/bibles/rv1909/ # Reina-Valera 1909 (Spanish, public domain)
     - assets/bibles/luther1912/ # Luther 1912 (German, public domain)
+    # Private / local translations you add yourself (gitignored; empty in a
+    # public/CI build). One JSON per translation + a manifest.json, produced by
+    # tool/build_private_translation.py. Copyrighted texts NEVER go in the repo.
+    - assets/bibles_private/
     # Chapter cross-reference graph for reading plans (built from the
     # OpenBible.info dataset, CC-BY 4.0; see tool/build_xref.py).
     - assets/data/xref_chapters.json
