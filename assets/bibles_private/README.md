@@ -34,6 +34,36 @@ here and simply lists no private translations.
    translations appear in the "Print your Bible" setup, right alongside the
    public-domain ones.
 
+## Building in CI without publishing the text (private mirror)
+
+Never commit a copyrighted translation to THIS public repo — that is
+redistribution, whatever the app is used for. If you want automated builds
+that include your private translations, use a **private mirror repo** (your
+licensed copy stored in your own private repo is personal storage):
+
+1. Create a **private** GitHub repository, e.g. `you/onyxbible-private`.
+2. Mirror this repo into it and add your private files on top:
+
+   ```sh
+   git clone https://github.com/greenducktape/OnyxBible onyxbible-private
+   cd onyxbible-private
+   git remote rename origin upstream
+   git remote add origin git@github.com:YOU/onyxbible-private.git
+   # copy your <id>.json + manifest.json into assets/bibles_private/
+   git add -f assets/bibles_private/*.json   # -f: they are gitignored on purpose
+   git commit -m "private translations (never push to the public repo)"
+   git push -u origin HEAD
+   ```
+3. The existing `Build APK` workflow runs there unchanged (private repos have
+   free Actions minutes) and produces an APK that includes your translations,
+   signed with the same sideload key — so it installs straight over any build
+   from the public repo, keeping all your notes.
+4. To pull app updates: `git fetch upstream && git merge upstream/<branch>`,
+   push, and CI rebuilds your private APK.
+
+The `-f` in step 2 only works in YOUR private clone; in the public repo the
+ignore rules keep those files out no matter what.
+
 ## Switching between versions
 
 Each printed Bible locks to one translation and keeps its own handwritten notes.
