@@ -12,6 +12,10 @@ Input (pick one):
                      book named like "1_Samuel.json"
   --json FILE        a single JSON file, either {"books": {...}} or a bare
                      {book: {chapter: [{"v","t"}]}} mapping
+  --items-json FILE  a chapter-rendered export keyed by USFM book codes
+                     ({"books": [{"book_usfm": "GEN", "chapters": [{"items":
+                     [{"type": "verse", "verse_numbers": [1], "lines": [...]
+                     }]}]}]})
 
 Output:
   assets/bibles_private/<id>.json        the translation, app format
@@ -125,6 +129,61 @@ def from_json(path):
     return out
 
 
+# Standard 3-letter USFM book codes, positionally matching CANON. Used by
+# chapter-rendered exports that identify books by code ("GEN", "1SA", ...).
+USFM_CODES = [
+    'GEN', 'EXO', 'LEV', 'NUM', 'DEU', 'JOS', 'JDG', 'RUT', '1SA', '2SA',
+    '1KI', '2KI', '1CH', '2CH', 'EZR', 'NEH', 'EST', 'JOB', 'PSA', 'PRO',
+    'ECC', 'SNG', 'ISA', 'JER', 'LAM', 'EZK', 'DAN', 'HOS', 'JOL', 'AMO',
+    'OBA', 'JON', 'MIC', 'NAM', 'HAB', 'ZEP', 'HAG', 'ZEC', 'MAL', 'MAT',
+    'MRK', 'LUK', 'JHN', 'ACT', 'ROM', '1CO', '2CO', 'GAL', 'EPH', 'PHP',
+    'COL', '1TH', '2TH', '1TI', '2TI', 'TIT', 'PHM', 'HEB', 'JAS', '1PE',
+    '2PE', '1JN', '2JN', '3JN', 'JUD', 'REV',
+]
+USFM_TO_NAME = dict(zip(USFM_CODES, CANON))
+
+
+def from_items_json(path):
+    """Chapter-rendered export: {"books": [{"book_usfm": "GEN", "chapters":
+    [{"chapter_usfm": "GEN.1", "is_chapter": true, "items": [{"type": "verse",
+    "verse_numbers": [1], "lines": ["..."]}]}]}]}. Headings/labels (any item
+    whose type isn't "verse") are dropped; a verse split across several items
+    is merged in order.
+    """
+    with open(path) as f:
+        data = json.load(f)
+    books = {}
+    for b in data.get('books', []):
+        name = USFM_TO_NAME.get(b.get('book_usfm'))
+        if name is None:
+            print(f'  skip book code {b.get("book_usfm")!r}: not in the canon')
+            continue
+        chapters = {}
+        for ch in b.get('chapters', []):
+            if not ch.get('is_chapter'):
+                continue
+            num = str(ch.get('chapter_usfm', '')).split('.')[-1]
+            if not num.isdigit():
+                continue
+            parts = {}  # verse number -> [text parts, in document order]
+            for it in ch.get('items', []):
+                if it.get('type') != 'verse':
+                    continue
+                vn = it.get('verse_numbers') or []
+                if len(vn) != 1:
+                    continue
+                text = ' '.join(
+                    ln.strip() for ln in (it.get('lines') or []) if ln and ln.strip())
+                if text:
+                    parts.setdefault(int(vn[0]), []).append(text)
+            verses = _verses([(v, ' '.join(parts[v])) for v in sorted(parts)])
+            if verses:
+                chapters[str(int(num))] = verses
+        if chapters:
+            books[name] = chapters
+    return books
+
+
 def upsert_manifest(entry):
     path = os.path.join(OUT_DIR, 'manifest.json')
     manifest = []
@@ -151,12 +210,17 @@ def main():
     src.add_argument('--zefania', metavar='FILE')
     src.add_argument('--book-dir', metavar='DIR')
     src.add_argument('--json', metavar='FILE')
+    src.add_argument('--items-json', metavar='FILE',
+                     help='chapter-rendered export keyed by USFM codes '
+                          '(books[].book_usfm / chapters[].items[])')
     args = ap.parse_args()
 
     if args.zefania:
         books = from_zefania(args.zefania)
     elif args.book_dir:
         books = from_book_dir(args.book_dir)
+    elif args.items_json:
+        books = from_items_json(args.items_json)
     else:
         books = from_json(args.json)
 
