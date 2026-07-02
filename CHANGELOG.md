@@ -58,6 +58,11 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
   when the app is backgrounded — protecting against data loss on power loss.
 
 ### Fixed
+- **Sideloaded updates install in place** (no more "package conflicts with an
+  existing package"): builds are now signed with a stable, committed sideload
+  keystore instead of each CI runner's random debug key, so updating no longer
+  requires uninstalling and losing data. One final reinstall is needed to move
+  onto the new key (use About → Export backup / Restore).
 - Long book titles no longer overflow the toolbar.
 - The chapter header no longer overflows its reserved space on the first page.
 - Plan lists now show a snippet echo's verse range ("Hebrews 11:1-3") instead of

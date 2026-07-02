@@ -57,11 +57,26 @@ flutter run        # deploy to a connected Onyx Boox device
 flutter test       # run the widget test
 ```
 
-## Releasing (signing for the store)
+## Releasing (signing)
 
-Release builds fall back to the debug key when no keystore is configured, so an
-APK always assembles. To produce a **store-signed** build, generate an upload
-keystore once:
+Release builds are signed with, in priority order:
+
+1. **Your private keystore** via `android/key.properties` / CI secrets — use
+   this for store releases (see below).
+2. **`android/sideload.jks`** — a deliberately **public** keystore committed to
+   the repo. It exists so every CI build carries the *same* signature and a
+   sideloaded APK installs **as an update, keeping all your data** (a fresh
+   debug key per CI run made every build conflict with the installed one).
+   Because it's public, anyone could sign an APK with it — only ever sideload
+   builds you got from this repo's own Actions/Releases, and never use this key
+   for a store upload.
+
+Note: Android ties updates to the signature, so *switching* keys (old random
+key → sideload key, or sideload key → your private store key) requires one
+uninstall/reinstall. Use **Menu → About → Export backup / Restore** to carry
+your notes across that one transition.
+
+To produce a **store-signed** build, generate an upload keystore once:
 
 ```sh
 keytool -genkey -v -keystore upload-keystore.jks \
