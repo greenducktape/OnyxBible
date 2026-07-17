@@ -72,6 +72,10 @@ android {
         }
         jniLibs {
             pickFirsts.add("lib/*/libc++_shared.so")
+            // The Onyx SDK AARs bundle a prebuilt libc++.so whose ELF layout
+            // newer NDK llvm-strip rejects ("not recognized as a valid object
+            // file"); package it unstripped instead of failing the build.
+            keepDebugSymbols.add("**/libc++.so")
         }
     }
 
