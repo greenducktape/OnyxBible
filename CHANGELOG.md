@@ -39,6 +39,15 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
 - **Eraser ring**: while erasing, a thin ring shows the eraser's reach.
 
 ### Changed
+- **Ink that settles into the page instead of being redrawn**: when the e-ink
+  refresh hands a finished stroke from the pen overlay to the app, the line now
+  keeps the shape and weight it was written with. Strokes are painted as one
+  smooth anti-aliased shape rather than a chain of hard-edged segments (the
+  "pixelated" look), stylus pressure is read on the pen's own scale so a light
+  touch is no longer mistaken for the hardest possible press, pressure can only
+  thin a line and never thicken it past the nib, a hairline never renders below
+  one physical panel pixel, and fine detail survives because fewer samples are
+  discarded. A translucent marker no longer darkens where it overlaps itself.
 - **E-ink refresh discipline**: page turns no longer flash the panel black every
   time — partial updates carry several turns and a full refresh runs every 6th
   turn and on chapter changes. Loading spinners are static now, and screen

@@ -282,6 +282,10 @@ class QuietLoader extends StatelessWidget {
 class StrokePoint {
   final double x;
   final double y;
+
+  /// Stylus pressure normalised to 0..1, or -1 when the pen reports none — see
+  /// _pressureOf. Painting treats -1 as "lay down the plain nib", so a pen
+  /// without a sensor draws an even line instead of a guessed one.
   final double pressure;
 
   const StrokePoint(this.x, this.y, [this.pressure = 1.0]);
@@ -787,19 +791,23 @@ const List<PenPreset> kPenPresets = [
 
 /// How a pen renders its committed ink. Width is the nib size modulated by
 /// stylus pressure between [lo] (light touch) and [hi] (hard press), giving the
-/// Boox-notetaker "weight" feel — press harder for a thicker line. Anti-aliasing
-/// is always off when painting (see _paintStroke) so a line keeps the same
-/// thickness through the e-ink GC refresh instead of "fattening" a second later.
+/// Boox-notetaker "weight" feel.
+///
+/// [hi] is 1.0 for every pen on purpose: full pressure paints exactly the nib
+/// the native overlay was told to draw with, so pressure can only ever thin a
+/// line, never fatten it. That is what stops a hairline turning into a fat
+/// stroke a second later when the e-ink refresh swaps the native preview for
+/// this rendering.
 class PenRecipe {
   final double lo; // width multiplier at zero pressure
-  final double hi; // width multiplier at full pressure
+  final double hi; // width multiplier at full pressure (never above 1.0)
   final bool taperEnds; // ramp width down over the first/last few points
   final StrokeCap cap;
   final double opacity; // applied to the stroke colour (marker = translucent)
 
   const PenRecipe({
-    this.lo = 0.85,
-    this.hi = 1.1,
+    this.lo = 0.9,
+    this.hi = 1.0,
     this.taperEnds = false,
     this.cap = StrokeCap.round,
     this.opacity = 1.0,
@@ -808,63 +816,165 @@ class PenRecipe {
 
 const Map<String, PenRecipe> _kPenRecipes = {
   // Near-uniform — a dependable everyday line.
-  'ballpoint': PenRecipe(lo: 0.85, hi: 1.1),
+  'ballpoint': PenRecipe(lo: 0.92),
   // Strong pressure response + end taper, like a real nib.
-  'fountain': PenRecipe(lo: 0.4, hi: 1.25, taperEnds: true),
+  'fountain': PenRecipe(lo: 0.45, taperEnds: true),
   // Widest dynamic range.
-  'brush': PenRecipe(lo: 0.3, hi: 1.6, taperEnds: true),
+  'brush': PenRecipe(lo: 0.35, taperEnds: true),
   // Thin and a touch lighter.
-  'pencil': PenRecipe(lo: 0.7, hi: 1.0, opacity: 0.9),
+  'pencil': PenRecipe(lo: 0.8, opacity: 0.9),
   // Highlighter: flat, wide, translucent; pressure-independent.
-  'marker': PenRecipe(lo: 1.0, hi: 1.0, cap: StrokeCap.butt, opacity: 0.32),
+  'marker': PenRecipe(lo: 1.0, cap: StrokeCap.butt, opacity: 0.32),
 };
 
 PenRecipe penRecipeFor(String id) =>
     _kPenRecipes[id] ?? _kPenRecipes['ballpoint']!;
 
-/// Paints one stroke with its pen recipe. Anti-aliasing is OFF so the line looks
-/// identical under an e-ink partial update and after the full GC refresh (no
-/// post-commit "fattening"). Width follows captured pressure for a weight feel.
-void _paintStroke(Canvas canvas, Stroke stroke, Size size) {
+/// A unit vector along [v] (falls back to +x for a degenerate segment).
+Offset _unit(Offset v) {
+  final d = v.distance;
+  return d < 1e-6 ? const Offset(1, 0) : v / d;
+}
+
+/// A smooth path through [p], curving through each point via the midpoints of
+/// its segments. A polyline traces the same points but keeps every sampling
+/// corner; this reads as a written line instead of a chain of straight bits.
+Path _smoothPath(List<Offset> p) {
+  final path = Path()..moveTo(p.first.dx, p.first.dy);
+  if (p.length == 2) {
+    path.lineTo(p[1].dx, p[1].dy);
+    return path;
+  }
+  for (var i = 1; i < p.length - 1; i++) {
+    final mid = (p[i] + p[i + 1]) / 2;
+    path.quadraticBezierTo(p[i].dx, p[i].dy, mid.dx, mid.dy);
+  }
+  path.lineTo(p.last.dx, p.last.dy);
+  return path;
+}
+
+/// The outline of a variable-width stroke: one side out, the other side back.
+/// Filling this makes the width change continuously along the line instead of
+/// stepping at every sample, which is what a real nib does.
+Path _ribbonPath(List<Offset> p, List<double> w) {
+  final n = p.length;
+  final left = <Offset>[];
+  final right = <Offset>[];
+  for (var i = 0; i < n; i++) {
+    // Average the incoming and outgoing directions so the outline turns
+    // smoothly through corners rather than pinching.
+    final Offset d;
+    if (i == 0) {
+      d = p[1] - p[0];
+    } else if (i == n - 1) {
+      d = p[n - 1] - p[n - 2];
+    } else {
+      d = _unit(p[i] - p[i - 1]) + _unit(p[i + 1] - p[i]);
+    }
+    final u = _unit(d);
+    final offset = Offset(-u.dy, u.dx) * (w[i] / 2);
+    left.add(p[i] + offset);
+    right.add(p[i] - offset);
+  }
+  final path = _smoothPath(left);
+  // extendWithPath joins the two sides with a straight line across the far tip.
+  path.extendWithPath(_smoothPath(right.reversed.toList()), Offset.zero);
+  path.close();
+  return path;
+}
+
+/// Paints one stroke as a single continuous shape.
+///
+/// Two things make committed ink read like the native Boox overlay rather than
+/// a redraw of it:
+///
+///  * **Anti-aliasing is ON.** Boox panels are 16-level greyscale, so a soft
+///    edge resolves to genuine intermediate greys — the "ink soaked into the
+///    paper" look of the stock Notes app. Hard-edged lines are precisely what
+///    reads as pixelated.
+///  * **One path, not one call per segment.** Drawing each segment on its own
+///    re-rasterises every join (visible lumps, and doubled darkness where a
+///    translucent marker overlaps itself). A single smoothed path is
+///    rasterised once, end to end.
+///
+/// [dpr] is the device pixel ratio: no line is ever painted thinner than one
+/// physical panel pixel, so a hairline stays a hairline instead of fading out.
+void _paintStroke(Canvas canvas, Stroke stroke, Size size, double dpr) {
   final pts = stroke.points;
   if (pts.isEmpty) return;
 
   // Map capture-time coordinates onto the current canvas (1:1 for unchanged
   // layouts and legacy strokes).
   final (sx, sy) = stroke.scaleTo(size);
-  Offset at(StrokePoint p) => Offset(p.x * sx, p.y * sy);
 
   final recipe = penRecipeFor(stroke.style);
   final base = stroke.width;
   final color = recipe.opacity >= 1.0
       ? stroke.color
       : stroke.color.withValues(alpha: recipe.opacity);
+  final minWidth = 1.0 / (dpr > 0 ? dpr : 1.0);
+
+  // Drop coincident samples: a zero-length segment has no direction, so it
+  // would put a spike in the outline.
+  final p = <Offset>[];
+  final pressures = <double>[];
+  for (final sp in pts) {
+    final o = Offset(sp.x * sx, sp.y * sy);
+    if (p.isNotEmpty && (o - p.last).distanceSquared < 0.01) continue;
+    p.add(o);
+    pressures.add(sp.pressure);
+  }
+
+  final n = p.length;
+  final w = List<double>.generate(n, (i) {
+    final pr = pressures[i];
+    // A negative pressure means the stylus reports none worth using. Paint the
+    // nib as-is rather than inventing a weight the writer never applied.
+    var f = pr < 0
+        ? recipe.hi
+        : recipe.lo + (recipe.hi - recipe.lo) * pr.clamp(0.0, 1.0);
+    if (recipe.taperEnds && n > 8) {
+      final edge = math.min(i, n - 1 - i);
+      if (edge < 4) f *= 0.6 + 0.1 * edge; // ease the line in and out
+    }
+    return math.max(minWidth, base * f);
+  });
 
   final paint = Paint()
     ..color = color
-    ..isAntiAlias = false
-    ..strokeCap = recipe.cap
-    ..strokeJoin = StrokeJoin.round
-    ..style = PaintingStyle.stroke;
+    ..isAntiAlias = true;
 
-  double widthAt(int i) {
-    final p = pts[i].pressure.clamp(0.0, 1.0);
-    var w = base * (recipe.lo + (recipe.hi - recipe.lo) * p);
-    if (recipe.taperEnds) {
-      final edge = math.min(i, pts.length - 1 - i);
-      if (edge < 3) w *= 0.55 + 0.15 * edge; // soften the first/last few points
-    }
-    return w;
-  }
-
-  if (pts.length == 1) {
-    paint.strokeWidth = widthAt(0);
-    canvas.drawPoints(PointMode.points, [at(pts.first)], paint);
+  if (n == 1) {
+    canvas.drawCircle(p.first, w.first / 2, paint..style = PaintingStyle.fill);
     return;
   }
-  for (var i = 0; i < pts.length - 1; i++) {
-    paint.strokeWidth = (widthAt(i) + widthAt(i + 1)) / 2;
-    canvas.drawLine(at(pts[i]), at(pts[i + 1]), paint);
+
+  var lo = w.first, hi = w.first;
+  for (final x in w) {
+    lo = math.min(lo, x);
+    hi = math.max(hi, x);
+  }
+
+  // A near-uniform nib strokes a single path: crisper than a filled outline at
+  // hairline widths, and cheaper to raster.
+  if (hi - lo < 0.25) {
+    canvas.drawPath(
+      _smoothPath(p),
+      paint
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = (lo + hi) / 2
+        ..strokeCap = recipe.cap
+        ..strokeJoin = StrokeJoin.round,
+    );
+    return;
+  }
+
+  canvas.drawPath(_ribbonPath(p, w), paint..style = PaintingStyle.fill);
+  if (recipe.cap != StrokeCap.butt) {
+    // Round off the ends. Only opaque pens get here (the translucent marker is
+    // butt-capped), so overdrawing the tips can't darken them.
+    canvas.drawCircle(p.first, w.first / 2, paint);
+    canvas.drawCircle(p.last, w.last / 2, paint);
   }
 }
 
@@ -1391,12 +1501,15 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                     // refresh that clears pen ghosting after page/chapter changes.
                     refreshDelay:
                         Duration(milliseconds: 1200 + (_refreshTick % 2)),
-                    // Active pen preset chooses the native style. The default
-                    // ballpoint is uniform-width, so the committed Flutter
-                    // stroke matches the live preview (no post-refresh fattening).
+                    // Active pen preset chooses the native style, so the live
+                    // overlay and the committed Flutter stroke are the same nib.
                     strokeStyle: _preset.nativeStyle,
                     strokeColor: _isEraser ? Colors.white : Colors.black,
-                    strokeWidth: _penWidth,
+                    // The SDK measures its nib in panel pixels while nib sizes
+                    // here are logical; converting keeps the live preview and
+                    // the committed stroke the same physical thickness (a no-op
+                    // on the many Boox panels that report a 1.0 ratio).
+                    strokeWidth: _penWidth * MediaQuery.devicePixelRatioOf(context),
                     child: _buildBody(),
                   ),
                   if (_showNibs)
@@ -1979,7 +2092,10 @@ class _PageInkState extends State<PageInk> {
   static const double _eraseRadius = 18.0;
   // Minimum spacing (logical px) between captured points while drawing. Below
   // this a move is ignored, capping points-per-stroke and per-frame redraw cost.
-  static const double _minSegment = 1.3;
+  // Kept low: the stroke is rasterised as one path now, so extra samples cost
+  // little, and dropping them is what turned quick small letters into angular
+  // approximations of themselves.
+  static const double _minSegment = 0.75;
   Size? _canvasSize; // reported by the painter; used for capture box + eraser
   final List<Stroke> _erasedThisGesture = [];
   Offset? _eraserAt; // eraser-tip position while erasing (drives the ring)
@@ -2022,6 +2138,18 @@ class _PageInkState extends State<PageInk> {
       e.kind == PointerDeviceKind.stylus ||
       e.kind == PointerDeviceKind.invertedStylus;
 
+  /// Stylus pressure on a 0..1 scale, or -1 when this pen doesn't report any.
+  ///
+  /// [PointerEvent.pressure] is in the device's own units; without rescaling by
+  /// the reported range a pen that maxes out at 4.0 reads as "hardest possible
+  /// press" the whole time. Pens with no sensor report a flat range, and -1
+  /// tells the painter to lay down the plain nib rather than guess a weight.
+  double _pressureOf(PointerEvent e) {
+    final span = e.pressureMax - e.pressureMin;
+    if (span.abs() < 0.001) return -1.0;
+    return ((e.pressure - e.pressureMin) / span).clamp(0.0, 1.0);
+  }
+
   // Erase when the eraser tool is on, the pen is flipped to its eraser end, OR
   // a stylus side/eraser button is held (many e-ink pens report it that way).
   bool _erasing(PointerEvent e) =>
@@ -2038,7 +2166,9 @@ class _PageInkState extends State<PageInk> {
       return;
     }
     _active = Stroke(
-      points: [StrokePoint(e.localPosition.dx, e.localPosition.dy, e.pressure)],
+      points: [
+        StrokePoint(e.localPosition.dx, e.localPosition.dy, _pressureOf(e))
+      ],
       width: widget.penWidth,
       style: widget.penStyle,
       captureW: _canvasSize?.width ?? 0,
@@ -2064,8 +2194,8 @@ class _PageInkState extends State<PageInk> {
     final dx = e.localPosition.dx - last.x;
     final dy = e.localPosition.dy - last.y;
     if (dx * dx + dy * dy < _minSegment * _minSegment) return;
-    _active!.points
-        .add(StrokePoint(e.localPosition.dx, e.localPosition.dy, e.pressure));
+    _active!.points.add(
+        StrokePoint(e.localPosition.dx, e.localPosition.dy, _pressureOf(e)));
     // Only the active layer repaints — committed strokes are untouched.
     _activeRepaint.value++;
   }
@@ -2128,6 +2258,9 @@ class _PageInkState extends State<PageInk> {
 
   @override
   Widget build(BuildContext context) {
+    // Ink is measured against the physical panel, not logical pixels, so a
+    // one-pixel line stays one pixel wherever it is painted.
+    final dpr = MediaQuery.devicePixelRatioOf(context);
     return Listener(
       onPointerDown: _onDown,
       onPointerMove: _onMove,
@@ -2142,6 +2275,7 @@ class _PageInkState extends State<PageInk> {
             child: CustomPaint(
               painter: _CommittedPainter(
                 strokes: _strokes,
+                dpr: dpr,
                 repaint: _committedRepaint,
                 onPaintSize: (s) => _canvasSize = s,
               ),
@@ -2157,6 +2291,7 @@ class _PageInkState extends State<PageInk> {
                 active: () => _active,
                 eraser: () => _eraserAt,
                 eraseRadius: _eraseRadius * widget.eraseScale,
+                dpr: dpr,
                 repaint: _activeRepaint,
               ),
               child: const SizedBox.expand(),
@@ -2170,6 +2305,7 @@ class _PageInkState extends State<PageInk> {
 
 class _CommittedPainter extends CustomPainter {
   final List<Stroke> strokes;
+  final double dpr;
 
   // Reports the actual canvas size on every paint. The page uses it to stamp
   // capture boxes on new strokes and to hit-test the eraser in canvas space.
@@ -2177,6 +2313,7 @@ class _CommittedPainter extends CustomPainter {
 
   _CommittedPainter({
     required this.strokes,
+    required this.dpr,
     required Listenable repaint,
     this.onPaintSize,
   }) : super(repaint: repaint);
@@ -2185,30 +2322,33 @@ class _CommittedPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     onPaintSize?.call(size);
     for (final s in strokes) {
-      _paintStroke(canvas, s, size);
+      _paintStroke(canvas, s, size, dpr);
     }
   }
 
   @override
-  bool shouldRepaint(covariant _CommittedPainter old) => old.strokes != strokes;
+  bool shouldRepaint(covariant _CommittedPainter old) =>
+      old.strokes != strokes || old.dpr != dpr;
 }
 
 class _ActivePainter extends CustomPainter {
   final Stroke? Function() active;
   final Offset? Function() eraser;
   final double eraseRadius;
+  final double dpr;
 
   _ActivePainter({
     required this.active,
     required this.eraser,
     required this.eraseRadius,
+    required this.dpr,
     required Listenable repaint,
   }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
     final a = active();
-    if (a != null) _paintStroke(canvas, a, size);
+    if (a != null) _paintStroke(canvas, a, size, dpr);
     // While erasing, show the tool's reach — a thin ring, like the shadow of a
     // physical eraser held against the page.
     final e = eraser();
