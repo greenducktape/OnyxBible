@@ -834,11 +834,22 @@ InkShade inkShadeById(String id) =>
 /// stroke a second later when the e-ink refresh swaps the native preview for
 /// this rendering.
 class PenRecipe {
-  final double lo; // width multiplier at zero pressure
-  final double hi; // width multiplier at full pressure (never above 1.0)
+  final double lo; // width multiplier at the light end of the range
+  final double hi; // width multiplier at the heavy end (never above 1.0)
   final bool taperEnds; // ramp width down over the first/last few points
   final StrokeCap cap;
   final double opacity; // applied to the stroke colour (marker = translucent)
+
+  /// How much of the width range speed drives, versus pressure (0 = pressure
+  /// only, 1 = speed only). A brush is mostly a speed instrument: it fattens
+  /// when the hand slows and thins on a quick flick. Relying on pressure alone
+  /// makes a stroke dead uniform whenever the stylus reports little of it,
+  /// which is exactly what "normalised" looks like.
+  final double speed;
+
+  /// Graphite tooth. Above zero the stroke is painted as a faint body with
+  /// scattered grain on top rather than as an even film — see [_paintPencil].
+  final double grain;
 
   const PenRecipe({
     this.lo = 0.9,
@@ -846,21 +857,64 @@ class PenRecipe {
     this.taperEnds = false,
     this.cap = StrokeCap.round,
     this.opacity = 1.0,
+    this.speed = 0.0,
+    this.grain = 0.0,
   });
 }
 
 const Map<String, PenRecipe> _kPenRecipes = {
   // Near-uniform — a dependable everyday line.
   'ballpoint': PenRecipe(lo: 0.92),
-  // Strong pressure response + end taper, like a real nib.
-  'fountain': PenRecipe(lo: 0.45, taperEnds: true),
-  // Widest dynamic range.
-  'brush': PenRecipe(lo: 0.35, taperEnds: true),
-  // Thin and a touch lighter.
-  'pencil': PenRecipe(lo: 0.8, opacity: 0.9),
-  // Highlighter: flat, wide, translucent; pressure-independent.
+  // A real nib: responds to how hard you press AND how fast you move.
+  'fountain': PenRecipe(lo: 0.42, taperEnds: true, speed: 0.4),
+  // Widest range, and mostly speed-driven — the loaded brush drags when the
+  // hand slows and runs dry on a flick.
+  'brush': PenRecipe(lo: 0.22, taperEnds: true, speed: 0.6),
+  // Graphite: a modest width range and a lot of tooth.
+  'pencil': PenRecipe(lo: 0.62, opacity: 0.95, speed: 0.35, grain: 1.0),
+  // Highlighter: flat, wide, translucent; pressure- and speed-independent.
   'marker': PenRecipe(lo: 1.0, cap: StrokeCap.butt, opacity: 0.32),
 };
+
+/// Sample spacing (in capture pixels) that counts as a fast stroke. The stylus
+/// reports at a steady rate, so how far apart two samples landed is how fast
+/// the hand was moving between them — no timestamp needed, which means notes
+/// written before any of this get the same treatment when they're redrawn.
+const double _kSpeedRef = 9.0;
+
+/// Per-point speed, smoothed. Raw sample spacing is jittery and a nib does not
+/// flicker in width; a short moving average turns it into the kind of slow
+/// swell a hand actually produces.
+List<double> _speedProfile(List<Offset> p) {
+  final n = p.length;
+  final raw = List<double>.filled(n, 0);
+  for (var i = 1; i < n; i++) {
+    raw[i] = (p[i] - p[i - 1]).distance;
+  }
+  if (n > 1) raw[0] = raw[1];
+
+  final out = List<double>.filled(n, 0);
+  for (var i = 0; i < n; i++) {
+    var sum = 0.0;
+    var count = 0;
+    for (var k = i - 2; k <= i + 2; k++) {
+      if (k < 0 || k >= n) continue;
+      sum += raw[k];
+      count++;
+    }
+    out[i] = sum / count;
+  }
+  return out;
+}
+
+/// Deterministic value noise in 0..1. Deterministic matters: the grain is
+/// hashed from the stroke's own coordinates, so a stroke grains identically on
+/// every repaint and after a reload. Random grain would crawl on each refresh.
+double _noise(int i, int seed) {
+  var h = (i * 374761393 + seed * 668265263) & 0x7fffffff;
+  h = ((h ^ (h >> 13)) * 1274126177) & 0x7fffffff;
+  return ((h ^ (h >> 16)) & 0xffff) / 65535.0;
+}
 
 PenRecipe penRecipeFor(String id) =>
     _kPenRecipes[id] ?? _kPenRecipes['ballpoint']!;
@@ -918,6 +972,95 @@ Path _ribbonPath(List<Offset> p, List<double> w) {
   return path;
 }
 
+/// Graphite on paper: a faint body with tooth scattered over it.
+///
+/// A pencil lays down no even film — the graphite catches on the paper's grain
+/// and skips, and it is that broken texture, not the line itself, that reads as
+/// "pencil". Painting it as a solid stroke is what makes a committed pencil
+/// mark look like a tracing of the one you drew rather than the thing itself.
+///
+/// The grain is accumulated into three paths (one per darkness) and filled
+/// three times, rather than drawn dot by dot — a long stroke can carry a
+/// thousand specks, and a thousand draw calls per stroke per repaint would not
+/// survive a page of notes.
+void _paintPencil(
+    Canvas canvas, List<Offset> p, List<double> w, Color color) {
+  var mean = 0.0;
+  for (final x in w) {
+    mean += x;
+  }
+  mean /= w.length;
+
+  var length = 0.0;
+  for (var i = 1; i < p.length; i++) {
+    length += (p[i] - p[i - 1]).distance;
+  }
+
+  // Grain spacing scales with the nib, so a broad pencil is not simply the
+  // same speckle stretched. Widened if a stroke would otherwise carry more
+  // specks than is worth drawing.
+  var step = math.max(0.9, mean * 0.42);
+  const maxSpecks = 900;
+  if (length / step > maxSpecks) step = length / maxSpecks;
+
+  final seed = ((p.first.dx * 7.31 + p.first.dy * 3.17).abs() * 64).round();
+  final alpha = color.a;
+
+  // The body carries the line's continuity; the grain carries its weight.
+  canvas.drawPath(
+    _smoothPath(p),
+    Paint()
+      ..color = color.withValues(alpha: alpha * 0.34)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = mean * 0.82
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..isAntiAlias = true,
+  );
+
+  const tiers = [0.28, 0.5, 0.78];
+  final paths = [Path(), Path(), Path()];
+  var carry = 0.0;
+  var speck = 0;
+
+  for (var i = 1; i < p.length; i++) {
+    final a = p[i - 1];
+    final seg = (p[i] - a).distance;
+    if (seg <= 0) continue;
+    final dir = (p[i] - a) / seg;
+    final normal = Offset(-dir.dy, dir.dx);
+
+    var t = carry;
+    while (t < seg) {
+      final n1 = _noise(speck, seed);
+      final n2 = _noise(speck + 977, seed);
+      final n3 = _noise(speck + 5081, seed);
+      speck++;
+      final at = a + dir * t;
+      final width = w[i - 1] + (w[i] - w[i - 1]) * (t / seg);
+      t += step * (0.55 + 0.9 * n3);
+
+      // Skipped specks are the point: paper tooth means the graphite misses.
+      if (n1 < 0.17) continue;
+
+      final centre = at + normal * ((n2 - 0.5) * width * 0.95);
+      final radius = width * (0.15 + 0.22 * n1);
+      paths[(n1 * 3).floor().clamp(0, 2)]
+          .addOval(Rect.fromCircle(center: centre, radius: radius));
+    }
+    carry = t - seg;
+  }
+
+  for (var k = 0; k < 3; k++) {
+    canvas.drawPath(
+      paths[k],
+      Paint()
+        ..color = color.withValues(alpha: (alpha * tiers[k]).clamp(0.0, 1.0))
+        ..isAntiAlias = true,
+    );
+  }
+}
+
 /// Paints one stroke as a single continuous shape.
 ///
 /// Two things make committed ink read like the native Boox overlay rather than
@@ -934,7 +1077,8 @@ Path _ribbonPath(List<Offset> p, List<double> w) {
 ///
 /// [dpr] is the device pixel ratio: no line is ever painted thinner than one
 /// physical panel pixel, so a hairline stays a hairline instead of fading out.
-void _paintStroke(Canvas canvas, Stroke stroke, Size size, double dpr) {
+void _paintStroke(Canvas canvas, Stroke stroke, Size size, double dpr,
+    {bool live = false}) {
   final pts = stroke.points;
   if (pts.isEmpty) return;
 
@@ -961,13 +1105,19 @@ void _paintStroke(Canvas canvas, Stroke stroke, Size size, double dpr) {
   }
 
   final n = p.length;
+  final speeds = recipe.speed > 0 ? _speedProfile(p) : null;
   final w = List<double>.generate(n, (i) {
     final pr = pressures[i];
-    // A negative pressure means the stylus reports none worth using. Paint the
-    // nib as-is rather than inventing a weight the writer never applied.
-    var f = pr < 0
-        ? recipe.hi
-        : recipe.lo + (recipe.hi - recipe.lo) * pr.clamp(0.0, 1.0);
+    // A negative pressure means the stylus reports none worth using. Treat it
+    // as a full press rather than inventing a weight the writer never applied
+    // — with speed in the mix the line still breathes.
+    final pressed = pr < 0 ? 1.0 : pr.clamp(0.0, 1.0);
+    var weight = pressed;
+    if (speeds != null) {
+      final slow = 1.0 - (speeds[i] / _kSpeedRef).clamp(0.0, 1.0);
+      weight = pressed * (1 - recipe.speed) + slow * recipe.speed;
+    }
+    var f = recipe.lo + (recipe.hi - recipe.lo) * weight;
     if (recipe.taperEnds && n > 8) {
       final edge = math.min(i, n - 1 - i);
       if (edge < 4) f *= 0.6 + 0.1 * edge; // ease the line in and out
@@ -981,6 +1131,15 @@ void _paintStroke(Canvas canvas, Stroke stroke, Size size, double dpr) {
 
   if (n == 1) {
     canvas.drawCircle(p.first, w.first / 2, paint..style = PaintingStyle.fill);
+    return;
+  }
+
+  // Grain is skipped for the stroke still under the nib. Rebuilding a
+  // thousand specks on every pointer move would make a long line crawl, and on
+  // a Boox the native overlay is drawing the live stroke anyway — this layer
+  // is only what the mark settles into.
+  if (recipe.grain > 0 && !live) {
+    _paintPencil(canvas, p, w, color);
     return;
   }
 
@@ -2660,7 +2819,7 @@ class _ActivePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final a = active();
-    if (a != null) _paintStroke(canvas, a, size, dpr);
+    if (a != null) _paintStroke(canvas, a, size, dpr, live: true);
     // While erasing, show the tool's reach — a thin ring, like the shadow of a
     // physical eraser held against the page.
     final e = eraser();

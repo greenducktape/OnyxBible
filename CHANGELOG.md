@@ -51,6 +51,16 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
   to black or to invisible white.
 
 ### Changed
+- **The brush and the pencil stop flattening out when a stroke settles.**
+  Committed width was driven by stylus pressure alone, so whenever the pen
+  reported little of it — which is most of ordinary writing — every point came
+  out the same width and the mark landed as an even, characterless line. Width
+  now follows speed as well: the brush swells where the hand slows and runs
+  thin on a flick, which is most of what makes a brush look like one.
+- **The pencil has grain again.** It was being painted as a solid line at 95%
+  opacity, which is not what graphite does. It now lands as a faint body with
+  tooth scattered over it — the same speckle every time, hashed from the
+  stroke's own coordinates, so it can't crawl between refreshes.
 - **Book names in the Bible's own language**: a Spanish Bible now reads
   "Génesis 1" and a German one "1. Mose 1" — in the chapter title, the printed
   page header, the contents list, the notes list, reading plans and search —
