@@ -65,12 +65,22 @@ jobs:
           name: onyx-bible-apk
           path: onyx-bible.apk
 
+      # `latest` is a floating release: tag, notes and APK all move to whatever
+      # was built last. `gh release create` fails the moment the tag exists, so
+      # the notes have to be edited explicitly — otherwise the Releases page
+      # keeps showing the commit and date of the very FIRST build forever while
+      # the APK underneath quietly changes, which reads as "no new release".
       - name: Publish APK to the 'latest' Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create latest \
-            --title "Onyx Bible — latest build" \
-            --notes "Sideload onyx-bible.apk onto your Boox. Built from ${{ github.sha }}." \
-            --target "${{ github.sha }}" || true
+          TITLE="Onyx Bible — latest build"
+          NOTES="Sideload onyx-bible.apk onto your Boox.
+
+          Built $(date -u '+%Y-%m-%d %H:%M UTC') from ${{ github.sha }} on ${{ github.ref_name }}."
+          # Move the floating tag first, so the release points at this build.
+          git tag -f latest
+          git push -f origin latest
+          gh release create latest --title "$TITLE" --notes "$NOTES" \
+            || gh release edit latest --title "$TITLE" --notes "$NOTES"
           gh release upload latest onyx-bible.apk --clobber
