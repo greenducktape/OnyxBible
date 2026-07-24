@@ -39,6 +39,13 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
 - **Eraser ring**: while erasing, a thin ring shows the eraser's reach.
 
 ### Changed
+- **Book names in the Bible's own language**: a Spanish Bible now reads
+  "Génesis 1" and a German one "1. Mose 1" — in the chapter title, the printed
+  page header, the contents list, the notes list, reading plans and search —
+  instead of English names over non-English text. Search understands them too,
+  with or without accents ("Génesis", "Genesis", "Sal 23", "1. Mose 1",
+  "Johannes 3,16"). Nothing stored changes: notes, plans and reading positions
+  stay keyed to the same chapters, so they follow you between translations.
 - **Ink that settles into the page instead of being redrawn**: when the e-ink
   refresh hands a finished stroke from the pen overlay to the app, the line now
   keeps the shape and weight it was written with. Strokes are painted as one

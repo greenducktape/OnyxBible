@@ -673,7 +673,8 @@ String narrativeFor(PlanConfig config) {
 /// Trailing sentence describing a non-default starting point, or '' for none.
 String _startSuffix(PlanConfig c) {
   if (!c.hasCustomStart) return '';
-  final where = '${c.startBook} ${c.startChapter}';
+  final where =
+      '${bookLabel(c.startBook, CanonLanguage.code)} ${c.startChapter}';
   return c.wrapAround
       ? ' It starts at $where and wraps back around, so you still cover '
           'everything before it.'

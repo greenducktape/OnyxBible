@@ -3,18 +3,21 @@
     "id": "nvi",
     "displayName": "Nueva Versión Internacional",
     "language": "Español",
+    "languageCode": "es",
     "attribution": "© Biblica, Inc. — Uso privado/local, no distribuir."
   },
   {
     "id": "rv1960",
     "displayName": "Reina-Valera 1960",
     "language": "Español",
+    "languageCode": "es",
     "attribution": "© Sociedades Bíblicas Unidas — Uso privado/local, no distribuir."
   },
   {
     "id": "lbla",
     "displayName": "La Biblia de las Américas",
     "language": "Español",
+    "languageCode": "es",
     "attribution": "© The Lockman Foundation — Uso privado/local, no distribuir."
   }
 ]

@@ -1075,6 +1075,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     _book = _cfg.lastBook;
     _chapter = _cfg.lastChapter;
     _source = sourceFor(translationById(_cfg.translationId));
+    // Book names follow the Bible in hand: a Spanish Bible reads "Génesis".
+    followCanonLanguage(_cfg.translationId);
   }
 
   @override
@@ -1158,7 +1160,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     final first = page.first.number;
     final last = page.last.number;
     final range = first == last ? '$first' : '$first–$last';
-    return '${_book.toUpperCase()} $_chapter:$range';
+    final name = bookLabel(_book, CanonLanguage.code).toUpperCase();
+    return '$name $_chapter:$range';
   }
 
   // E-ink refresh discipline: a full (GC) refresh flashes the panel black,
@@ -1553,7 +1556,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Flexible(
-                    child: Text('$_book $_chapter',
+                    child: Text(
+                        '${bookLabel(_book, CanonLanguage.code)} $_chapter',
                         overflow: TextOverflow.ellipsis,
                         softWrap: false,
                         style: kTitleStyle(18 * _ui)),
@@ -1969,7 +1973,7 @@ class ChapterHeader extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
-            book.toUpperCase(),
+            bookLabel(book, CanonLanguage.code).toUpperCase(),
             style: crimson(
               fontSize: 13,
               height: 1.0,
@@ -2401,7 +2405,9 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
                 onPressed: () => setState(() => _selected = null),
               ),
         title: Text(
-          book == null ? 'Contents' : book.name,
+          book == null
+              ? canonLabels(CanonLanguage.code).contents
+              : bookLabel(book.name, CanonLanguage.code),
           style: kTitleStyle(20),
         ),
       ),
@@ -2415,9 +2421,9 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
     return ListView(
       padding: const EdgeInsets.only(bottom: 24),
       children: [
-        _sectionHeader('Old Testament'),
+        _sectionHeader(canonLabels(CanonLanguage.code).oldTestament),
         ...ot.map(_bookTile),
-        _sectionHeader('New Testament'),
+        _sectionHeader(canonLabels(CanonLanguage.code).newTestament),
         ...nt.map(_bookTile),
       ],
     );
@@ -2453,7 +2459,7 @@ class _BookPickerScreenState extends State<BookPickerScreen> {
               ),
             Expanded(
               child: Text(
-                b.name,
+                bookLabel(b.name, CanonLanguage.code),
                 style: kTitleStyle(19,
                     weight: isCurrent ? FontWeight.w700 : FontWeight.w400),
               ),
@@ -2610,7 +2616,7 @@ class _NotesBrowserScreenState extends State<NotesBrowserScreen> {
                           children: [
                             Expanded(
                               child: Text(
-                                '${e.ref.book} ${e.ref.chapter}',
+                                e.ref.label(CanonLanguage.code),
                                 style: kTitleStyle(18, weight: FontWeight.w700),
                               ),
                             ),
@@ -2717,7 +2723,7 @@ class _PlansScreenState extends State<PlansScreen> {
 
   String _summary(PlanDay d) =>
       // toString keeps a snippet echo's verse range ("Hebrews 11:1-3") visible.
-      d.passages.map((r) => r.toString()).join('  ·  ');
+      d.passages.map((r) => r.label(CanonLanguage.code)).join('  ·  ');
 
   @override
   Widget build(BuildContext context) {
@@ -3008,7 +3014,7 @@ class _PlansScreenState extends State<PlansScreen> {
                   child: Row(
                     children: [
                       Expanded(
-                        child: Text('${day.passages[pi]}',
+                        child: Text(day.passages[pi].label(CanonLanguage.code),
                             style: kTitleStyle(20, weight: FontWeight.w500)),
                       ),
                       Icon(
@@ -3482,7 +3488,8 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
                     Expanded(
                       child: Text(
                           _c.hasCustomStart
-                              ? '${_c.startBook} ${_c.startChapter}'
+                              ? '${bookLabel(_c.startBook, CanonLanguage.code)}'
+                                  ' ${_c.startChapter}'
                               : 'The beginning',
                           style: kTitleStyle(17, weight: FontWeight.w500)),
                     ),
@@ -3560,7 +3567,9 @@ class _PlanBuilderScreenState extends State<PlanBuilderScreen> {
                   color: kMuted)),
           const SizedBox(height: 6),
           Text(
-            day.passages.map((r) => r.toString()).join('   ·   '),
+            day.passages
+                .map((r) => r.label(CanonLanguage.code))
+                .join('   ·   '),
             style: kTitleStyle(18, weight: FontWeight.w500),
           ),
         ],
@@ -3718,7 +3727,8 @@ class _SearchScreenState extends State<SearchScreen> {
         if (_ref != null)
           ListTile(
             leading: const Icon(Icons.my_location, color: kInk),
-            title: Text('Go to ${_ref!}', style: kTitleStyle(18)),
+            title: Text('Go to ${_ref!.label(CanonLanguage.code)}',
+                style: kTitleStyle(18)),
             onTap: () => Navigator.of(context).pop(_ref),
           ),
         if (_ref != null) const Divider(height: 1, color: Colors.black12),

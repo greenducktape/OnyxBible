@@ -204,6 +204,9 @@ def main():
     ap.add_argument('--id', required=True, help='short id, e.g. nvi')
     ap.add_argument('--name', required=True, help='display name')
     ap.add_argument('--language', default='Español')
+    ap.add_argument('--language-code', default='',
+                    help="book-name language: en, es, de. Inferred from "
+                         "--language when omitted")
     ap.add_argument('--attribution', required=True,
                     help='copyright / usage note shown in the app')
     src = ap.add_mutually_exclusive_group(required=True)
@@ -233,12 +236,17 @@ def main():
     with open(out_path, 'w') as f:
         json.dump({'id': args.id, 'books': books}, f, ensure_ascii=False)
 
-    manifest_path = upsert_manifest({
+    entry = {
         'id': args.id,
         'displayName': args.name,
         'language': args.language,
         'attribution': args.attribution,
-    })
+    }
+    # Only written when stated: the app infers it from --language otherwise,
+    # and an absent key is one less thing to keep in sync.
+    if args.language_code:
+        entry['languageCode'] = args.language_code
+    manifest_path = upsert_manifest(entry)
 
     total = sum(len(ch) for ch in books.values())
     print(f'Wrote {out_path}: {len(books)} books, {total} chapters')

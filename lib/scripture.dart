@@ -31,10 +31,13 @@ String verseId(String book, int chapter, int verse) => '${book}_${chapter}_$vers
 class TranslationInfo {
   final String id; // also the asset folder name, e.g. 'kjv'
   final String displayName;
-  final String language;
+  final String language; // human label, e.g. 'Español'
   final bool bundled; // public-domain asset under assets/bibles/<id>/
   final bool private; // locally-added asset under assets/bibles_private/<id>.json
   final String attribution;
+
+  /// Which set of book names this translation reads in ('en', 'es', 'de').
+  final String languageCode;
 
   const TranslationInfo({
     required this.id,
@@ -42,23 +45,45 @@ class TranslationInfo {
     required this.language,
     required this.bundled,
     required this.attribution,
+    this.languageCode = 'en',
     this.private = false,
   });
 
   /// Available offline on this device (either shipped or locally added).
   bool get offline => bundled || private;
 
+  /// Best guess at a language code from a human language label, so a private
+  /// manifest can just say "Español" and still get Spanish book names.
+  static String codeForLanguage(String language) {
+    final l = language.toLowerCase();
+    if (l.startsWith('es') || l.startsWith('cast') || l.contains('spanish')) {
+      return 'es';
+    }
+    if (l.startsWith('de') || l.startsWith('ger')) return 'de';
+    return 'en';
+  }
+
   /// Builds a private-translation entry from a manifest.json record. The text
   /// itself lives in `assets/bibles_private/<id>.json` (gitignored).
-  factory TranslationInfo.fromManifest(Map<String, dynamic> j) => TranslationInfo(
-        id: j['id'] as String,
-        displayName: (j['displayName'] as String?) ?? (j['id'] as String),
-        language: (j['language'] as String?) ?? '',
-        attribution: (j['attribution'] as String?) ?? 'Private / local use',
-        bundled: false,
-        private: true,
-      );
+  factory TranslationInfo.fromManifest(Map<String, dynamic> j) {
+    final language = (j['language'] as String?) ?? '';
+    return TranslationInfo(
+      id: j['id'] as String,
+      displayName: (j['displayName'] as String?) ?? (j['id'] as String),
+      language: language,
+      languageCode:
+          (j['languageCode'] as String?) ?? codeForLanguage(language),
+      attribution: (j['attribution'] as String?) ?? 'Private / local use',
+      bundled: false,
+      private: true,
+    );
+  }
 }
+
+/// Points [CanonLanguage] at the translation now being read, so every book name
+/// on screen switches to that Bible's own language.
+void followCanonLanguage(String translationId) =>
+    CanonLanguage.code = translationById(translationId).languageCode;
 
 const List<TranslationInfo> kTranslations = [
   TranslationInfo(
@@ -72,6 +97,7 @@ const List<TranslationInfo> kTranslations = [
     id: 'rv1909',
     displayName: 'Reina-Valera 1909',
     language: 'Español',
+    languageCode: 'es',
     bundled: true,
     attribution: 'Dominio público',
   ),
@@ -79,6 +105,7 @@ const List<TranslationInfo> kTranslations = [
     id: 'luther1912',
     displayName: 'Luther 1912',
     language: 'Deutsch',
+    languageCode: 'de',
     bundled: true,
     attribution: 'Gemeinfrei (Public Domain)',
   ),
@@ -285,7 +312,8 @@ class SearchHit {
     required this.text,
   });
 
-  String get reference => '$book $chapter:$verse';
+  String get reference =>
+      '${bookLabel(book, CanonLanguage.code)} $chapter:$verse';
 }
 
 /// Full-text search over any offline translation (bundled or private), routing

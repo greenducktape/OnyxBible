@@ -85,4 +85,7 @@ switch between them in **Menu → My Bibles**. Notes stay with their Bible.
 
 Book keys are the canonical English names used across the app (see
 `lib/books.dart`); verse ids stay language-independent so notes carry across
-translations.
+translations. On screen the books are *named* in the translation's own
+language — a Spanish Bible reads "Génesis", a German one "1. Mose". That
+follows the manifest's `language` field, and you can force it with an explicit
+`"languageCode"` (`en`, `es`, `de`) if the label doesn't give it away.
