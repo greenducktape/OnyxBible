@@ -13,4 +13,13 @@ class MethodChannelOnyxsdkPen extends OnyxsdkPenPlatform {
     final isOnyxDevice = await methodChannel.invokeMethod<bool>('isOnyxDevice');
     return isOnyxDevice ?? false;
   }
+
+  @override
+  Future<double?> displayDpi() async {
+    try {
+      return await methodChannel.invokeMethod<double>('displayDpi');
+    } catch (_) {
+      return null;
+    }
+  }
 }

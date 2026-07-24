@@ -11,7 +11,8 @@ import 'atomic_file.dart';
 class Settings {
   final String lastBook;
   final int lastChapter;
-  final int widthIndex; // index into the reader's stroke-width list
+  final double penWidth; // nib width in logical pixels (continuous)
+  final String inkShade; // ink shade id (see kInkShades)
   final String translation; // translation id (see scripture.dart registry)
   final int textScaleIndex; // index into the reader's text-size steps
   final bool ignoreTouch; // palm rejection: ignore finger touches (pen only)
@@ -20,7 +21,8 @@ class Settings {
   const Settings({
     this.lastBook = 'John',
     this.lastChapter = 1,
-    this.widthIndex = 1,
+    this.penWidth = 1.5,
+    this.inkShade = 'black',
     this.translation = 'kjv',
     this.textScaleIndex = 1,
     this.ignoreTouch = false,
@@ -30,7 +32,8 @@ class Settings {
   Settings copyWith({
     String? lastBook,
     int? lastChapter,
-    int? widthIndex,
+    double? penWidth,
+    String? inkShade,
     String? translation,
     int? textScaleIndex,
     bool? ignoreTouch,
@@ -39,7 +42,8 @@ class Settings {
       Settings(
         lastBook: lastBook ?? this.lastBook,
         lastChapter: lastChapter ?? this.lastChapter,
-        widthIndex: widthIndex ?? this.widthIndex,
+        penWidth: penWidth ?? this.penWidth,
+        inkShade: inkShade ?? this.inkShade,
         translation: translation ?? this.translation,
         textScaleIndex: textScaleIndex ?? this.textScaleIndex,
         ignoreTouch: ignoreTouch ?? this.ignoreTouch,
@@ -50,7 +54,8 @@ class Settings {
         'schema': 1,
         'lastBook': lastBook,
         'lastChapter': lastChapter,
-        'widthIndex': widthIndex,
+        'penWidth': penWidth,
+        'inkShade': inkShade,
         'translation': translation,
         'textScaleIndex': textScaleIndex,
         'ignoreTouch': ignoreTouch,
@@ -60,13 +65,30 @@ class Settings {
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
         lastBook: j['lastBook'] as String? ?? 'John',
         lastChapter: (j['lastChapter'] as num?)?.toInt() ?? 1,
-        widthIndex: (j['widthIndex'] as num?)?.toInt() ?? 1,
+        penWidth: _readPenWidth(j),
+        inkShade: j['inkShade'] as String? ?? 'black',
         translation: j['translation'] as String? ?? 'kjv',
         textScaleIndex: (j['textScaleIndex'] as num?)?.toInt() ?? 1,
         ignoreTouch: j['ignoreTouch'] as bool? ?? false,
         uiSizeIndex: (j['uiSizeIndex'] as num?)?.toInt() ?? 0,
       );
 }
+
+/// The nib widths the pen used to be limited to. Kept only so a settings file
+/// written before the slider existed reopens at the size its owner last chose.
+const List<double> _kLegacyWidths = [1.0, 1.5, 2.0, 3.0, 4.5, 6.0];
+
+double _readPenWidth(Map<String, dynamic> j) {
+  final w = (j['penWidth'] as num?)?.toDouble();
+  if (w != null) return w.clamp(kMinPenWidth, kMaxPenWidth);
+  final i = (j['widthIndex'] as num?)?.toInt();
+  if (i == null) return 1.5;
+  return _kLegacyWidths[i.clamp(0, _kLegacyWidths.length - 1)];
+}
+
+/// Nib range, in logical pixels: a hairline through to a broad marker stroke.
+const double kMinPenWidth = 0.5;
+const double kMaxPenWidth = 12.0;
 
 class SettingsStore {
   static Settings _value = const Settings();

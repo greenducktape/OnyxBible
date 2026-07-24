@@ -8,4 +8,8 @@ class OnyxsdkPen {
   Future<bool> isOnyxDevice() {
     return OnyxsdkPenPlatform.instance.isOnyxDevice();
   }
+
+  Future<double?> displayDpi() {
+    return OnyxsdkPenPlatform.instance.displayDpi();
+  }
 }

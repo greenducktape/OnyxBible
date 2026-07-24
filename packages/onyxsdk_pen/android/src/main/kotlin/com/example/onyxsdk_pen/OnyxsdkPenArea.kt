@@ -80,20 +80,22 @@ internal class OnyxsdkPenArea(context: Context, messenger: BinaryMessenger, id: 
          from white and colorful otherwise.
         */
         if (dest[1] < 0.05) {
+            /*
+             Achromatic ink — black, the greys, white. An e-ink panel renders
+             these natively, so the shade is passed through EXACTLY as asked.
+             The value clamp below would otherwise round every grey to black or
+             to invisible white, which is not a clamp, it's a deletion.
+            */
             dest[1] = 0.0f
         } else {
             dest[1] = 1.0f
-        }
-        /*
-         Value
-         I want color to show
-         So clamp to black if it's visually indistinguishable from black
-         and to colorful otherwise. E.g. brown will look red instead of black
-        */
-        if (dest[2] < 0.2) {
-            dest[2] = 0.0f
-        } else {
-            dest[2] = 1.0f
+            /*
+             Value
+             I want color to show
+             So clamp to black if it's visually indistinguishable from black
+             and to colorful otherwise. E.g. brown will look red instead of black
+            */
+            dest[2] = if (dest[2] < 0.2) 0.0f else 1.0f
         }
         strokeColor = Color.HSVToColor(dest)
         strokeWidth = (paramsRef?.get("strokeWidth") as? Double ?: 3.0).toFloat()

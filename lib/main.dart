@@ -36,6 +36,7 @@ void main() {
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
     await OnyxSdkPenArea.init();
+    gDisplayDpi = await OnyxsdkPen().displayDpi();
     await SettingsStore.init();
     await PlanStore.init();
     await loadPrivateTranslations(); // register any locally-added versions
@@ -789,6 +790,40 @@ const List<PenPreset> kPenPresets = [
   ),
 ];
 
+/// The panel's true density in dots per inch, read from the pen plugin at
+/// startup, or null where the platform won't say. Flutter's devicePixelRatio is
+/// measured against a 160dpi baseline and understates an e-ink panel's real dot
+/// pitch badly, so a nib size quoted from it would be fiction.
+double? gDisplayDpi;
+
+/// A nib width in millimetres on this panel, or null if the density is unknown
+/// (the raw size is shown instead of a made-up measurement).
+double? nibMillimetres(double logicalPx, double dpr) {
+  final dpi = gDisplayDpi;
+  if (dpi == null || dpi <= 1) return null;
+  return logicalPx * dpr / dpi * 25.4;
+}
+
+/// The shades of ink worth offering. The panel is greyscale, so these are the
+/// only distinctions that actually survive to the page — every other colour
+/// would come back as one of them anyway.
+class InkShade {
+  final String id;
+  final String label;
+  final Color color;
+
+  const InkShade(this.id, this.label, this.color);
+}
+
+const List<InkShade> kInkShades = [
+  InkShade('black', 'Black', Color(0xFF000000)),
+  InkShade('grey', 'Grey', Color(0xFF666666)),
+  InkShade('light', 'Light grey', Color(0xFFA5A5A5)),
+];
+
+InkShade inkShadeById(String id) =>
+    kInkShades.firstWhere((s) => s.id == id, orElse: () => kInkShades.first);
+
 /// How a pen renders its committed ink. Width is the nib size modulated by
 /// stylus pressure between [lo] (light touch) and [hi] (hard press), giving the
 /// Boox-notetaker "weight" feel.
@@ -1002,15 +1037,18 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   // Opens the left menu drawer from the burger button.
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  // Drawing tools. A wider range of nib sizes; default to a fine line.
-  static const List<double> _widths = [1.0, 1.5, 2.0, 3.0, 4.5, 6.0];
-  int _widthIndex = 1;
+  // Drawing tools. The nib is a continuous size, not a set of steps — a pen is
+  // chosen by how thick you want the line, and the sizes worth writing at on a
+  // 300dpi panel are far closer together than six buttons can express.
+  double _nib = 1.5;
   int _presetIndex = 0; // ballpoint — uniform, matches commit no-fattening
+  int _shadeIndex = 0; // black
   PenTool _tool = PenTool.pen;
 
   PenPreset get _preset => kPenPresets[_presetIndex];
   // Effective width: nib size scaled by the preset's bias.
-  double get _penWidth => _widths[_widthIndex] * _preset.widthScale;
+  double get _penWidth => _nib * _preset.widthScale;
+  InkShade get _shade => kInkShades[_shadeIndex];
   bool get _isEraser => _tool == PenTool.eraser;
 
   // The printed Bible whose locked layout this reader renders.
@@ -1036,9 +1074,9 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   // banner + auto-complete). Cleared by any manual navigation.
   PlanSession? _session;
 
-  // Whether the on-demand nib-size row is visible (toggled by tapping the
-  // already-selected pen preset a second time).
-  bool _showNibs = false;
+  // Whether the pen panel — nib slider, textures, ink shades — is open
+  // (toggled by tapping the already-selected pen a second time).
+  bool _showPenPanel = false;
 
   // Palm rejection: when on, finger touches are ignored so a resting hand can't
   // flip the page; the page is turned with the on-bar arrows instead. Persisted.
@@ -1053,8 +1091,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _applyActiveBible();
-    _widthIndex =
-        SettingsStore.value.widthIndex.clamp(0, _widths.length - 1).toInt();
+    _nib = SettingsStore.value.penWidth
+        .clamp(kMinPenWidth, kMaxPenWidth)
+        .toDouble();
+    _shadeIndex = kInkShades
+        .indexWhere((s) => s.id == SettingsStore.value.inkShade)
+        .clamp(0, kInkShades.length - 1);
     _loadChapter();
     // If any store had to recover from a .bak on load, tell the user once.
     if (gDataRecovered) {
@@ -1101,8 +1143,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     // Reading position lives on the (otherwise locked) Bible; stroke width and
     // palm rejection are global tool preferences, not part of the printed layout.
     LibraryStore.rememberPosition(_book, _chapter);
-    SettingsStore.update(SettingsStore.value
-        .copyWith(widthIndex: _widthIndex, ignoreTouch: _ignoreTouch));
+    SettingsStore.update(SettingsStore.value.copyWith(
+        penWidth: _nib, inkShade: _shade.id, ignoreTouch: _ignoreTouch));
   }
 
   Future<void> _loadChapter() async {
@@ -1507,7 +1549,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                     // Active pen preset chooses the native style, so the live
                     // overlay and the committed Flutter stroke are the same nib.
                     strokeStyle: _preset.nativeStyle,
-                    strokeColor: _isEraser ? Colors.white : Colors.black,
+                    strokeColor: _isEraser ? Colors.white : _shade.color,
                     // The SDK measures its nib in panel pixels while nib sizes
                     // here are logical; converting keeps the live preview and
                     // the committed stroke the same physical thickness (a no-op
@@ -1515,12 +1557,15 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                     strokeWidth: _penWidth * MediaQuery.devicePixelRatioOf(context),
                     child: _buildBody(),
                   ),
-                  if (_showNibs)
+                  if (_showPenPanel)
                     Positioned(
                       top: 0,
                       left: 0,
                       right: 0,
-                      child: _buildNibRow(),
+                      child: Align(
+                        alignment: Alignment.topLeft,
+                        child: _buildPenPanel(),
+                      ),
                     ),
                 ],
               ),
@@ -1643,11 +1688,12 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
               selected: !_isEraser && _presetIndex == i,
               onTap: () => setState(() {
                 if (!_isEraser && _presetIndex == i) {
-                  _showNibs = !_showNibs; // second tap: toggle nib row
+                  // Second tap on the active pen opens its settings.
+                  _showPenPanel = !_showPenPanel;
                 } else {
                   _presetIndex = i;
                   _tool = PenTool.pen;
-                  _showNibs = false;
+                  _showPenPanel = false;
                 }
               }),
             ),
@@ -1657,7 +1703,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
             selected: _isEraser,
             onTap: () => setState(() {
               _tool = _isEraser ? PenTool.pen : PenTool.eraser;
-              _showNibs = false;
+              _showPenPanel = false;
             }),
           ),
           // Palm rejection toggle: a crossed-out hand when finger touch is off.
@@ -1670,7 +1716,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
             selected: _ignoreTouch,
             onTap: () => setState(() {
               _ignoreTouch = !_ignoreTouch;
-              _showNibs = false;
+              _showPenPanel = false;
               _persist();
             }),
           ),
@@ -1684,25 +1730,212 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     );
   }
 
-  // On-demand nib-size row — shown below the unified bar only when _showNibs is
-  // true (activated by tapping the already-selected pen a second time). Selecting
-  // a nib hides the row immediately.
-  Widget _buildNibRow() {
-    return Container(
-      height: 36 * _ui,
-      decoration: const BoxDecoration(
-        color: kPaper,
-        border: Border(bottom: BorderSide(color: kDisabled, width: 1)),
-      ),
-      child: Row(
-        children: [
-          SizedBox(width: 12 * _ui),
-          for (var i = 0; i < _widths.length; i++) _railNib(i),
-          const Spacer(),
-        ],
+  // The pen, all in one sheet: its texture, the nib width on a continuous
+  // slider, and the ink shade. Opened by tapping the active pen a second time,
+  // and it STAYS open while you adjust — finding the right line means trying a
+  // few, and a panel that closed on every touch would make that a chore.
+  Widget _buildPenPanel() {
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final width = math.min(
+        560.0 * _ui, MediaQuery.of(context).size.width - 16 * _ui);
+    return GestureDetector(
+      // Swallow taps: the page underneath turns pages on a finger tap.
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
+      child: Container(
+        width: width,
+        margin: EdgeInsets.symmetric(horizontal: 8 * _ui),
+        padding: EdgeInsets.fromLTRB(18 * _ui, 10 * _ui, 10 * _ui, 14 * _ui),
+        decoration: BoxDecoration(
+          color: kPaper,
+          border: Border.all(color: kInk, width: 1.2),
+          borderRadius: BorderRadius.circular(10 * _ui),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text('${_preset.label} ${_nibLabel(dpr)}',
+                      style: kTitleStyle(17 * _ui, weight: FontWeight.w600)),
+                ),
+                InkResponse(
+                  onTap: () => setState(() => _showPenPanel = false),
+                  radius: 22 * _ui,
+                  child: Padding(
+                    padding: EdgeInsets.all(6 * _ui),
+                    child: Icon(Icons.close, size: 20 * _ui, color: kMuted),
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 6 * _ui),
+            Row(
+              children: [
+                for (var i = 0; i < kPenPresets.length; i++) _panelPen(i),
+              ],
+            ),
+            _panelDivider(),
+            Row(
+              children: [
+                Text('Line width',
+                    style: crimson(fontSize: 15 * _ui, color: kInk)),
+                const Spacer(),
+                _nibStep(Icons.chevron_left, -_kNibStep),
+                SizedBox(
+                  width: 78 * _ui,
+                  child: Text(_nibLabel(dpr),
+                      textAlign: TextAlign.center,
+                      style: crimson(fontSize: 15 * _ui, color: kInk)),
+                ),
+                _nibStep(Icons.chevron_right, _kNibStep),
+              ],
+            ),
+            SizedBox(height: 2 * _ui),
+            WedgeSlider(
+              value: (_nib - kMinPenWidth) / (kMaxPenWidth - kMinPenWidth),
+              scale: _ui,
+              onChanged: (t) => _setNib(
+                  kMinPenWidth + t * (kMaxPenWidth - kMinPenWidth),
+                  persist: false),
+              onChangeEnd: _persist,
+            ),
+            _panelDivider(),
+            Row(
+              children: [
+                Text('Ink', style: crimson(fontSize: 15 * _ui, color: kInk)),
+                const Spacer(),
+                for (var i = 0; i < kInkShades.length; i++) _panelShade(i),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
+
+  // How far the < > buttons move the nib. Fine enough to hunt for a size,
+  // coarse enough that the line visibly changes with each press.
+  static const double _kNibStep = 0.5;
+
+  /// The nib size as the panel states it: in millimetres where the panel has
+  /// told us its real density, otherwise the raw size (never a fake mm figure).
+  String _nibLabel(double dpr) {
+    final mm = nibMillimetres(_nib, dpr);
+    return mm == null
+        ? _nib.toStringAsFixed(1)
+        : '${mm.toStringAsFixed(2)} mm';
+  }
+
+  // Dragging the slider reports continuously; writing the setting on every
+  // step would put the whole library file through the disk on one gesture.
+  void _setNib(double v, {bool persist = true}) {
+    // Snapped to a quarter pixel: finer than the eye can tell apart at this
+    // dot pitch, and it keeps one slider drag from asking an e-ink panel for
+    // several hundred redraws.
+    final next =
+        (v.clamp(kMinPenWidth, kMaxPenWidth) * 4).roundToDouble() / 4;
+    if ((next - _nib).abs() < 0.001) return;
+    setState(() => _nib = next);
+    if (persist) _persist();
+  }
+
+  Widget _nibStep(IconData icon, double delta) => InkResponse(
+        onTap: () => _setNib(_nib + delta),
+        radius: 20 * _ui,
+        child: Container(
+          width: 34 * _ui,
+          height: 30 * _ui,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            border: Border.all(color: kMuted, width: 1),
+            borderRadius: BorderRadius.circular(5 * _ui),
+          ),
+          child: Icon(icon, size: 18 * _ui, color: kInk),
+        ),
+      );
+
+  Widget _panelDivider() => Padding(
+        padding: EdgeInsets.symmetric(vertical: 10 * _ui),
+        child: Container(height: 1, color: kDisabled),
+      );
+
+  // A pen texture. The dot beneath marks the active one — an underline would
+  // fight the toolbar's own selection mark right above it.
+  Widget _panelPen(int i) {
+    final p = kPenPresets[i];
+    final selected = !_isEraser && _presetIndex == i;
+    return Tooltip(
+      message: p.label,
+      child: InkResponse(
+        onTap: () => setState(() {
+          _presetIndex = i;
+          _tool = PenTool.pen;
+          _persist();
+        }),
+        radius: 24 * _ui,
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 9 * _ui, vertical: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(p.icon, size: 26 * _ui, color: selected ? kInk : kMuted),
+              SizedBox(height: 5 * _ui),
+              _selectedDot(selected),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // An ink shade. Only black and two greys: the panel is greyscale, so any
+  // other colour would arrive as one of these three anyway.
+  Widget _panelShade(int i) {
+    final shade = kInkShades[i];
+    final selected = !_isEraser && _shadeIndex == i;
+    return Tooltip(
+      message: shade.label,
+      child: InkResponse(
+        onTap: () => setState(() {
+          _shadeIndex = i;
+          _tool = PenTool.pen;
+          _persist();
+        }),
+        radius: 24 * _ui,
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 7 * _ui, vertical: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 28 * _ui,
+                height: 28 * _ui,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: shade.color,
+                  border: Border.all(color: kInk, width: 1),
+                ),
+              ),
+              SizedBox(height: 5 * _ui),
+              _selectedDot(selected),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _selectedDot(bool selected) => Container(
+        width: 5 * _ui,
+        height: 5 * _ui,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: selected ? kInk : Colors.transparent,
+        ),
+      );
 
   Widget _railTool({
     required IconData icon,
@@ -1733,40 +1966,6 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     );
   }
 
-  // A dot whose size tracks the nib width; the selected one is filled.
-  // Selecting a nib also closes the on-demand nib row.
-  Widget _railNib(int i) {
-    final selected = !_isEraser && _widthIndex == i;
-    final d = (5 + _widths[i] * 1.5).clamp(6.0, 17.0) * _ui;
-    return Tooltip(
-      message: _widths[i].toStringAsFixed(1),
-      child: InkResponse(
-        onTap: () => setState(() {
-          _widthIndex = i;
-          _showNibs = false;
-          _persist();
-        }),
-        radius: 22 * _ui,
-        child: SizedBox(
-          width: 34 * _ui,
-          height: 36 * _ui,
-          child: Center(
-            child: Container(
-              width: d,
-              height: d,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: selected ? kInk : Colors.transparent,
-                border: Border.all(
-                    color: selected ? kInk : kMuted, width: 1.4 * _ui),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   // Kindle-style finger-tap page turning. Wraps any body child with a Listener
   // that catches non-stylus pointer-down events in the left/right 25% of the
   // screen and turns the page. HitTestBehavior.translucent lets the underlying
@@ -1775,7 +1974,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerDown: (e) {
-        if (_showNibs) setState(() => _showNibs = false);
+        if (_showPenPanel) setState(() => _showPenPanel = false);
         // Stylus events are for drawing; only finger taps navigate.
         if (e.kind == PointerDeviceKind.stylus ||
             e.kind == PointerDeviceKind.invertedStylus) {
@@ -1942,6 +2141,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                     pageKey: pageKey,
                     penWidth: _penWidth,
                     penStyle: _preset.id,
+                    penColor: _shade.color,
                     isEraser: _isEraser,
                     eraseScale: _ui,
                   ),
@@ -2065,6 +2265,7 @@ class PageInk extends StatefulWidget {
   final String pageKey;
   final double penWidth;
   final String penStyle; // active pen recipe id (kPenPresets)
+  final Color penColor; // ink shade (see kInkShades)
   final bool isEraser;
   final double eraseScale; // chrome scale; widens the erase radius on big panels
 
@@ -2073,6 +2274,7 @@ class PageInk extends StatefulWidget {
     required this.pageKey,
     required this.penWidth,
     required this.penStyle,
+    required this.penColor,
     required this.isEraser,
     this.eraseScale = 1.0,
   });
@@ -2174,6 +2376,7 @@ class _PageInkState extends State<PageInk> {
         StrokePoint(e.localPosition.dx, e.localPosition.dy, _pressureOf(e))
       ],
       width: widget.penWidth,
+      color: widget.penColor,
       style: widget.penStyle,
       captureW: _canvasSize?.width ?? 0,
       captureH: _canvasSize?.height ?? 0,
@@ -2305,6 +2508,111 @@ class _PageInkState extends State<PageInk> {
       ),
     );
   }
+}
+
+/// The nib-width slider: a wedge that thickens to the right, so the control
+/// shows the thing it sets rather than describing it.
+///
+/// Hand-drawn rather than a Material [Slider] because that one animates its
+/// thumb and paints a ripple overlay on touch — on e-ink both arrive as smear,
+/// and the value lands late. Here the knob is simply where your finger is.
+class WedgeSlider extends StatelessWidget {
+  final double value; // 0..1
+  final ValueChanged<double> onChanged;
+
+  /// Fired when the gesture finishes. Dragging reports continuously, so
+  /// anything expensive — writing the setting to disk — belongs here, not in
+  /// [onChanged], which fires on every pixel of travel.
+  final VoidCallback? onChangeEnd;
+  final double scale;
+
+  const WedgeSlider({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.onChangeEnd,
+    this.scale = 1.0,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = 11.0 * scale;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final span = width - 2 * radius;
+        void report(Offset p) {
+          if (span <= 0) return;
+          onChanged(((p.dx - radius) / span).clamp(0.0, 1.0));
+        }
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (d) => report(d.localPosition),
+          onTapUp: (_) => onChangeEnd?.call(),
+          onHorizontalDragStart: (d) => report(d.localPosition),
+          onHorizontalDragUpdate: (d) => report(d.localPosition),
+          onHorizontalDragEnd: (_) => onChangeEnd?.call(),
+          child: CustomPaint(
+            size: Size(width, 42 * scale),
+            painter: _WedgePainter(
+              value: value.clamp(0.0, 1.0),
+              radius: radius,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _WedgePainter extends CustomPainter {
+  final double value;
+  final double radius;
+
+  _WedgePainter({required this.value, required this.radius});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final mid = size.height / 2;
+    final x0 = radius;
+    final x1 = size.width - radius;
+    if (x1 <= x0) return;
+
+    final thin = 1.0;
+    final thick = size.height * 0.44;
+    final ink = Paint()
+      ..color = kInk
+      ..isAntiAlias = true;
+
+    canvas.drawPath(
+      Path()
+        ..moveTo(x0, mid - thin / 2)
+        ..lineTo(x1, mid - thick / 2)
+        ..lineTo(x1, mid + thick / 2)
+        ..lineTo(x0, mid + thin / 2)
+        ..close(),
+      ink,
+    );
+    // Rounds off the broad end, so the wedge reads as a nib and not an arrow.
+    canvas.drawCircle(Offset(x1, mid), thick / 2, ink);
+
+    final cx = x0 + (x1 - x0) * value;
+    canvas.drawCircle(Offset(cx, mid), radius, Paint()..color = kPaper);
+    canvas.drawCircle(
+      Offset(cx, mid),
+      radius,
+      Paint()
+        ..color = kInk
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..isAntiAlias = true,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _WedgePainter old) =>
+      old.value != value || old.radius != radius;
 }
 
 class _CommittedPainter extends CustomPainter {

@@ -23,4 +23,9 @@ abstract class OnyxsdkPenPlatform extends PlatformInterface {
   }
 
   Future<bool> isOnyxDevice() async => false;
+
+  /// The screen's true physical density in dots per inch, or null where the
+  /// platform can't say. Flutter's devicePixelRatio is relative to a 160dpi
+  /// baseline, which says nothing about an e-ink panel's real dot pitch.
+  Future<double?> displayDpi() async => null;
 }

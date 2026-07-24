@@ -38,6 +38,18 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
   book-like page. Existing printed Bibles are untouched.
 - **Eraser ring**: while erasing, a thin ring shows the eraser's reach.
 
+### Added
+- **A pen panel instead of six nib buttons**: tapping the active pen a second
+  time opens a sheet with the pen's texture, a continuous width slider (a wedge
+  that thickens to the right, so the control looks like what it sets), `<`/`>`
+  buttons for exact steps, and the ink shade. The width is stated in real
+  millimetres, read from the panel's actual dot pitch rather than guessed from
+  Flutter's 160dpi-relative ratio.
+- **Ink shades**: black, grey and light grey. Only three, because the panel is
+  greyscale and every other colour would arrive as one of these anyway. Greys
+  now also survive to the live pen overlay, which previously rounded any grey
+  to black or to invisible white.
+
 ### Changed
 - **Book names in the Bible's own language**: a Spanish Bible now reads
   "Génesis 1" and a German one "1. Mose 1" — in the chapter title, the printed
