@@ -56,6 +56,40 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release
 
+      # TEMPORARY — remove once the API is known.
+      # The committed-ink renderer currently imitates the SDK's pens by hand,
+      # which can never match them exactly. The SDK ships the same pen renderers
+      # it uses for the raw layer; this dumps their signatures out of the AAR
+      # Gradle just downloaded, so the app can call that code instead of
+      # guessing at it. Never fails the build.
+      - name: Dump Onyx SDK pen API
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e
+          find ~/.gradle/caches -name '*.aar' -path '*onyx*' | while read -r aar; do
+            echo "=== AAR: $aar ==="
+            work=$(mktemp -d)
+            unzip -o -q "$aar" -d "$work"
+            [ -f "$work/classes.jar" ] || { echo "(no classes.jar)"; continue; }
+            unzip -o -q "$work/classes.jar" -d "$work/cls"
+            cd "$work/cls" || continue
+            echo "--- pen / touchpoint classes ---"
+            find . -name '*.class' \
+              | sed 's|^\./||; s|\.class$||; s|/|.|g' \
+              | grep -Ei 'sdk\.pen|touchpoint' | grep -v '\$' | sort | head -120
+            echo "--- signatures ---"
+            for c in $(find . -name '*.class' \
+                | sed 's|^\./||; s|\.class$||; s|/|.|g' \
+                | grep -v '\$' \
+                | grep -Ei 'Neo.*Pen$|TouchPoint$|TouchPointList$|TouchHelper$|PenUtils$|.*Renderer$'); do
+              echo "### $c"
+              javap -classpath . "$c" 2>/dev/null | head -60
+            done
+            cd - >/dev/null
+          done
+          exit 0
+
       - name: Rename APK
         run: cp build/app/outputs/flutter-apk/app-release.apk onyx-bible.apk
 
