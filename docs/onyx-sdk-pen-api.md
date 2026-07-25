@@ -32,25 +32,39 @@ equivalent to, and `timestamp`, which it only started recording separately.
 
 ## The renderers
 
-`com.onyx.android.sdk.pen.*`, all static:
+`com.onyx.android.sdk.pen.*`, all static. Parameter NAMES are the real ones,
+read from each method's LocalVariableTable (`javap -l`) — the AAR kept its debug
+info. Worth having: the argument roles are not guessable from the types, and
+three of these methods take consecutive floats.
 
 ```java
-NeoFountainPen.drawStroke(Canvas, Paint, List<TouchPoint> points,
-                          float, float, float, boolean);
-NeoFountainPen.computeStrokePoints(List<TouchPoint>, float, float, float);
-NeoFountainPen.hasPressure(List<TouchPoint>);
+NeoFountainPen.drawStroke(Canvas canvas, Paint paint, List<TouchPoint> points,
+                          float displayScale, float strokeWidth,
+                          float maxTouchPressure, boolean erase);
 
-NeoBrushPen.drawStroke(Canvas, Paint, List<TouchPoint>, float, float, boolean);
-NeoBrushPen.computeStrokePoints(List<TouchPoint>, float, float);
+NeoBrushPen.drawStroke(Canvas canvas, Paint paint, List<TouchPoint> points,
+                       float strokeWidth, float maxTouchPressure,
+                       boolean erase);
 
-NeoMarkerPen.drawStroke(Canvas, Paint, List<TouchPoint>, float, boolean);
-NeoMarkerPen.computeStrokePoints(List<TouchPoint>, float, float);
+NeoMarkerPen.drawStroke(Canvas canvas, Paint paint, List<TouchPoint> list,
+                        float strokeWidth, boolean erase);
 
-NeoCharcoalPen.drawNormalStroke(Context, Canvas, Paint, List<TouchPoint>,
-                                int, float, ShapeCreateArgs, Matrix, boolean);
-NeoCharcoalPen.drawBigStroke(Context, Canvas, Paint, List<TouchPoint>, Matrix,
-                             int, float, ShapeCreateArgs, Matrix, boolean);
+NeoCharcoalPen.drawNormalStroke(Context context, Canvas canvas, Paint paint,
+                                List<TouchPoint> points, int color,
+                                float strokeWidth, ShapeCreateArgs createArgs,
+                                Matrix screenMatrix, boolean erase);
+
+PenUtils.drawStrokeByPointSize(Canvas canvas, Paint paint,
+                               List<TouchPoint> points, boolean erase);
+
+NeoPenUtils.computeStrokePoints(int type, List<TouchPoint> points,
+                                float strokeWidth, float maxTouchPressure);
 ```
+
+Note the fountain pen takes `displayScale` FIRST of the three floats, where the
+brush takes `strokeWidth` — pass points already in panel pixels and it wants
+1.0. There is no getter anywhere for `maxTouchPressure`; Onyx panels report
+4096.
 
 The plain pen/pencil style (`TouchHelper.STROKE_STYLE_PENCIL`) has no dedicated
 `Neo*` class; `PenUtils.drawStrokeByPointSize(Canvas, Paint, List<TouchPoint>,
@@ -59,13 +73,13 @@ boolean)` appears to be its path.
 Helpers worth knowing about:
 
 ```java
-PenUtils.ensurePenBitmapCreated(Rect);          // a bitmap sized for pen output
-PenUtils.toTouchPoints(NeoRenderPoint[]);
-NeoPenUtils.computeStrokePoints(int strokeStyle, List<TouchPoint>, float, float);
+PenUtils.ensurePenBitmapCreated(Rect drawRect);  // a bitmap sized for pen output
+PenUtils.toTouchPoints(NeoRenderPoint[] points);
+PenUtils.getPointArray(List<TouchPoint> points, float maxTouchPressure);
 ```
 
-`NeoPenUtils.computeStrokePoints` takes a `TouchHelper.STROKE_STYLE_*` constant,
-so it is the one entry point that covers every style.
+`NeoPenUtils.computeStrokePoints` takes a `TouchHelper.STROKE_STYLE_*` constant
+as its `type`, so it is the one entry point that covers every style.
 
 ## Stroke styles
 
@@ -82,7 +96,14 @@ so it is the one entry point that covers every style.
 The SDK also has `STROKE_STYLE_DASH` and `STROKE_STYLE_CHARCOAL_V2` (with a
 matching `NeoCharcoalPenV2` class), neither of which the app offers.
 
-## What this would take
+## How the app uses it
+
+`OnyxStrokeRenderer` (in the vendored plugin) draws a page's strokes into a
+bitmap with these and returns a PNG. Flutter keeps owning strokes, storage,
+erasing and undo, and falls back to its own painter whenever native rendering
+isn't available or hasn't landed yet.
+
+## What this took
 
 Drawing committed ink with these means it can no longer be a Flutter
 `CustomPainter` — they need an Android `Canvas`. The least invasive shape is:

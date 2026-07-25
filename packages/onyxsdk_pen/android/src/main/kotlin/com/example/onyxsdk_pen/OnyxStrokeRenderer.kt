@@ -3,6 +3,7 @@ package com.example.onyxsdk_pen
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Matrix
 import android.graphics.Paint
 import com.onyx.android.sdk.data.note.TouchPoint
 import com.onyx.android.sdk.pen.NeoBrushPen
@@ -137,13 +138,16 @@ internal object OnyxStrokeRenderer {
         }
         return when (onyxStyle) {
             TouchHelper.STROKE_STYLE_FOUNTAIN -> {
+                // (canvas, paint, points, displayScale, strokeWidth,
+                //  maxTouchPressure, erase)
                 NeoFountainPen.drawStroke(
-                    canvas, paint, points, BASE_PRESSURE, strokeWidth,
+                    canvas, paint, points, DISPLAY_SCALE, strokeWidth,
                     MAX_PRESSURE, false,
                 )
                 true
             }
             TouchHelper.STROKE_STYLE_NEO_BRUSH -> {
+                // (canvas, paint, points, strokeWidth, maxTouchPressure, erase)
                 NeoBrushPen.drawStroke(
                     canvas, paint, points, strokeWidth, MAX_PRESSURE, false,
                 )
@@ -156,9 +160,13 @@ internal object OnyxStrokeRenderer {
             TouchHelper.STROKE_STYLE_CHARCOAL,
             TouchHelper.STROKE_STYLE_CHARCOAL_V2 -> {
                 if (context == null) return false
+                // (context, canvas, paint, points, color, strokeWidth,
+                //  createArgs, screenMatrix, erase). An identity matrix rather
+                // than null: the points already arrive in panel pixels, and a
+                // null matrix is not worth finding out about at runtime.
                 NeoCharcoalPen.drawNormalStroke(
                     context, canvas, paint, points, paint.color, strokeWidth,
-                    null, null, false,
+                    null, Matrix(), false,
                 )
                 true
             }
@@ -173,10 +181,12 @@ internal object OnyxStrokeRenderer {
     /** x, y, pressure, size, timestamp. */
     private const val STRIDE = 5
 
-    // The SDK scales its dynamics against the digitiser's pressure range. 4096
-    // is what Onyx's own panels report; the values are only reference points for
-    // "light" and "full", so being off by a little shifts the weighting rather
-    // than breaking the stroke.
+    // The renderers weigh pressure against the digitiser's range, which the
+    // SDK exposes no getter for. 4096 is what Onyx's panels report; being off
+    // would shift the weighting rather than break the stroke.
     private const val MAX_PRESSURE = 4096.0f
-    private const val BASE_PRESSURE = 0.0f
+
+    // NeoFountainPen's displayScale. The points already arrive in panel pixels,
+    // so nothing further should be scaled.
+    private const val DISPLAY_SCALE = 1.0f
 }
