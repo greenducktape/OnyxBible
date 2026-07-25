@@ -2703,13 +2703,18 @@ class _PageInkState extends State<PageInk> {
 
   double _lastDpr = 1.0;
 
+  // What _wantNativeInk said when this page last acted on it. Null until the
+  // first build.
+  bool? _reconciledWant;
+
   // Follows the setting being turned on or off while pages are already built.
-  // Deferred past the frame: both branches touch a repaint notifier, which is
-  // not something to do in the middle of building.
+  // Keyed on the setting CHANGING, not on whether an image happens to be
+  // present: a render that comes back null would otherwise schedule another one
+  // on the very next frame, and another, each a page-sized bitmap.
   void _reconcileNativeInk() {
     final wanted = _wantNativeInk;
-    if (!wanted && _nativeInk == null) return;
-    if (wanted && (_nativeInk != null || _strokes.isEmpty)) return;
+    if (_reconciledWant == wanted) return;
+    _reconciledWant = wanted;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (_wantNativeInk) {
@@ -2758,8 +2763,13 @@ class _PageInkState extends State<PageInk> {
   void _onPaintSize(Size size) {
     if (_canvasSize == size) return;
     _canvasSize = size;
-    if (_nativeInkSize != null && _nativeInkSize != size) _dropNativeInk();
-    _scheduleNativeInk();
+    // Deferred: this runs inside paint, and both calls below touch the repaint
+    // notifier that drove it.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _canvasSize != size) return;
+      if (_nativeInkSize != null && _nativeInkSize != size) _dropNativeInk();
+      _scheduleNativeInk();
+    });
   }
 
   void _resyncFromStore() {
