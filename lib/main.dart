@@ -2628,21 +2628,33 @@ class _PageInkState extends State<PageInk> {
   // invisible while this is in flight.
   ui.Image? _nativeInk;
   Size? _nativeInkSize; // canvas size the image was rendered for
+
+  /// How many of [_strokes] are baked into [_nativeInk]. Anything past this the
+  /// app draws itself, on top — so a fresh stroke appears immediately without
+  /// re-rendering the whole page for it. Re-rendering per stroke meant a
+  /// page-sized bitmap built and PNG-encoded every time the pen was lifted,
+  /// which is not a cost writing can carry.
+  int _nativeInkCount = 0;
+
   int _inkRequest = 0; // guards against a slow render landing after a newer one
   Timer? _inkDebounce;
 
   bool get _wantNativeInk =>
       gNativeInkAvailable && SettingsStore.value.nativeInk;
 
-  // Coalesces bursts of change — erasing fires per pointer move, and each
-  // render is a page-sized bitmap crossing the channel.
-  void _scheduleNativeInk() {
+  // Waits for the hand to stop. A render is a page-sized bitmap built,
+  // PNG-encoded, sent over the channel and decoded again; doing that between
+  // two words would be felt. Nothing is missing meanwhile — strokes past
+  // [_nativeInkCount] are drawn by the app until the render catches up.
+  void _scheduleNativeInk({
+    Duration delay = const Duration(milliseconds: 1500),
+  }) {
     if (!_wantNativeInk) {
       _dropNativeInk();
       return;
     }
     _inkDebounce?.cancel();
-    _inkDebounce = Timer(const Duration(milliseconds: 180), _renderNativeInk);
+    _inkDebounce = Timer(delay, _renderNativeInk);
   }
 
   void _dropNativeInk() {
@@ -2651,6 +2663,7 @@ class _PageInkState extends State<PageInk> {
     _nativeInk?.dispose();
     _nativeInk = null;
     _nativeInkSize = null;
+    _nativeInkCount = 0;
     _committedRepaint.value++;
   }
 
@@ -2663,6 +2676,7 @@ class _PageInkState extends State<PageInk> {
     }
     final dpr = _lastDpr;
     final request = ++_inkRequest;
+    final baked = _strokes.length;
     final strokes = [
       for (final s in _strokes) _strokeForNative(s, size, dpr),
     ];
@@ -2695,6 +2709,7 @@ class _PageInkState extends State<PageInk> {
       _nativeInk?.dispose();
       _nativeInk = frame.image;
       _nativeInkSize = size;
+      _nativeInkCount = baked;
       _committedRepaint.value++;
     } catch (_) {
       _dropNativeInk();
@@ -2868,6 +2883,9 @@ class _PageInkState extends State<PageInk> {
         DrawingStore.setStrokes(widget.pageKey, _strokes);
         kUndo.recordAdd(widget.pageKey, _active!);
         changed = true;
+        // Not urgent: this stroke is on the panel in the SDK's own ink, and
+        // the app draws it on top of the bitmap until a pause lets a render
+        // fold it in.
         _scheduleNativeInk();
       }
       _active = null;
@@ -2908,10 +2926,11 @@ class _PageInkState extends State<PageInk> {
     _erasedThisGesture.addAll(removed);
     _strokes.removeWhere((s) => removed.contains(s));
     DrawingStore.setStrokes(widget.pageKey, _strokes);
-    // Erasing repaints from the app's own rendering until the re-render lands;
-    // showing ink that was just rubbed out would be worse than a brief swap.
+    // Erasing renumbers the strokes, so the bitmap cannot be kept and drawn
+    // on top of — and showing ink that was just rubbed out would be worse than
+    // a brief change of renderer.
     _dropNativeInk();
-    _scheduleNativeInk();
+    _scheduleNativeInk(delay: const Duration(milliseconds: 700));
     _committedRepaint.value++;
   }
 
@@ -2939,6 +2958,7 @@ class _PageInkState extends State<PageInk> {
                 dpr: dpr,
                 nativeInk: _nativeInk,
                 nativeInkSize: _nativeInkSize,
+                nativeInkCount: _nativeInkCount,
                 repaint: _committedRepaint,
                 onPaintSize: _onPaintSize,
               ),
@@ -3083,6 +3103,10 @@ class _CommittedPainter extends CustomPainter {
   final ui.Image? nativeInk;
   final Size? nativeInkSize;
 
+  /// How many of [strokes] the bitmap already contains. The rest are drawn on
+  /// top by the app, so ink written since the last render is never missing.
+  final int nativeInkCount;
+
   // Reports the actual canvas size on every paint. The page uses it to stamp
   // capture boxes on new strokes and to hit-test the eraser in canvas space.
   final ValueChanged<Size>? onPaintSize;
@@ -3093,6 +3117,7 @@ class _CommittedPainter extends CustomPainter {
     required Listenable repaint,
     this.nativeInk,
     this.nativeInkSize,
+    this.nativeInkCount = 0,
     this.onPaintSize,
   }) : super(repaint: repaint);
 
@@ -3101,6 +3126,7 @@ class _CommittedPainter extends CustomPainter {
     onPaintSize?.call(size);
 
     final image = nativeInk;
+    var first = 0;
     if (image != null && nativeInkSize == size) {
       // Rendered at physical resolution for this exact canvas, so it maps back
       // one bitmap pixel to one panel pixel — no resampling to soften it.
@@ -3110,11 +3136,11 @@ class _CommittedPainter extends CustomPainter {
         Offset.zero & size,
         Paint()..filterQuality = FilterQuality.none,
       );
-      return;
+      first = nativeInkCount.clamp(0, strokes.length);
     }
 
-    for (final s in strokes) {
-      _paintStroke(canvas, s, size, dpr);
+    for (var i = first; i < strokes.length; i++) {
+      _paintStroke(canvas, strokes[i], size, dpr);
     }
   }
 
@@ -3123,7 +3149,8 @@ class _CommittedPainter extends CustomPainter {
       old.strokes != strokes ||
       old.dpr != dpr ||
       old.nativeInk != nativeInk ||
-      old.nativeInkSize != nativeInkSize;
+      old.nativeInkSize != nativeInkSize ||
+      old.nativeInkCount != nativeInkCount;
 }
 
 class _ActivePainter extends CustomPainter {

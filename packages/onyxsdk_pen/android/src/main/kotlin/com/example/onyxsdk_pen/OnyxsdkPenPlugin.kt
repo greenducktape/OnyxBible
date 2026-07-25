@@ -1,6 +1,8 @@
 package com.example.onyxsdk_pen
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.NonNull
 import com.onyx.android.sdk.rx.RxManager
 
@@ -9,6 +11,8 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 /** OnyxsdkPenPlugin */
@@ -19,6 +23,17 @@ class OnyxsdkPenPlugin: FlutterPlugin, MethodCallHandler {
   /// when the Flutter Engine is detached from the Activity
     private lateinit var channel : MethodChannel
     private var appContext: Context? = null
+
+    // Rendering a page runs off the platform thread. A method-channel handler
+    // is called ON the Android main thread, and this one allocates a
+    // page-sized bitmap, draws every stroke on it and PNG-encodes the result —
+    // hundreds of milliseconds during which nothing on screen responds. Doing
+    // that on the main thread is what makes buttons miss and pages refuse to
+    // turn. Single-threaded: renders queue behind each other instead of
+    // fighting for memory.
+    private val renderExecutor: ExecutorService =
+        Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
   override fun onAttachedToEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
     channel = MethodChannel(binding.binaryMessenger, "onyxsdk_pen")
@@ -54,14 +69,18 @@ class OnyxsdkPenPlugin: FlutterPlugin, MethodCallHandler {
       val args = call.arguments<Map<String, Any?>>()
       @Suppress("UNCHECKED_CAST")
       val strokes = args?.get("strokes") as? List<Map<String, Any?>> ?: emptyList()
-      result.success(
-        OnyxStrokeRenderer.renderToPng(
-          appContext,
-          (args?.get("width") as? Number)?.toInt() ?: 0,
-          (args?.get("height") as? Number)?.toInt() ?: 0,
-          strokes,
-        )
-      )
+      val context = appContext
+      val width = (args?.get("width") as? Number)?.toInt() ?: 0
+      val height = (args?.get("height") as? Number)?.toInt() ?: 0
+      renderExecutor.execute {
+        val png = try {
+          OnyxStrokeRenderer.renderToPng(context, width, height, strokes)
+        } catch (e: Throwable) {
+          null
+        }
+        // A Result must be answered on the main thread.
+        mainHandler.post { result.success(png) }
+      }
     } else {
       result.notImplemented()
     }
@@ -70,6 +89,7 @@ class OnyxsdkPenPlugin: FlutterPlugin, MethodCallHandler {
   override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
     channel.setMethodCallHandler(null)
     appContext = null
+    renderExecutor.shutdown()
   }
 
   private fun checkHiddenApiBypass() {

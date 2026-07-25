@@ -21,6 +21,14 @@ class Settings {
   /// Render finished ink with the Boox SDK's own pen renderers rather than the
   /// app's imitation of them, so a stroke looks the same after it settles as it
   /// did under the nib. Ignored on non-Onyx devices, which have no such thing.
+  ///
+  /// OFF by default. It is the right rendering and the wrong default: it costs
+  /// a page-sized bitmap built, encoded, sent and decoded, and until that is
+  /// demonstrably cheap on real hardware, nobody should meet it without asking.
+  ///
+  /// Stored under a NEW key, so a settings file written while this defaulted to
+  /// on does not keep it on. Changing the default alone would have left exactly
+  /// the people who already hit the problem still holding it.
   final bool nativeInk;
 
   const Settings({
@@ -32,7 +40,7 @@ class Settings {
     this.textScaleIndex = 1,
     this.ignoreTouch = false,
     this.uiSizeIndex = 0,
-    this.nativeInk = true,
+    this.nativeInk = false,
   });
 
   Settings copyWith({
@@ -68,7 +76,7 @@ class Settings {
         'textScaleIndex': textScaleIndex,
         'ignoreTouch': ignoreTouch,
         'uiSizeIndex': uiSizeIndex,
-        'nativeInk': nativeInk,
+        'nativeInkOptIn': nativeInk,
       };
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
@@ -80,7 +88,7 @@ class Settings {
         textScaleIndex: (j['textScaleIndex'] as num?)?.toInt() ?? 1,
         ignoreTouch: j['ignoreTouch'] as bool? ?? false,
         uiSizeIndex: (j['uiSizeIndex'] as num?)?.toInt() ?? 0,
-        nativeInk: j['nativeInk'] as bool? ?? true,
+        nativeInk: j['nativeInkOptIn'] as bool? ?? false,
       );
 }
 

@@ -8,7 +8,7 @@ void main() {
         lastChapter: 8,
         penWidth: 2.75,
         inkShade: 'grey',
-        nativeInk: false,
+        nativeInk: true,
         translation: 'kjv',
         textScaleIndex: 3,
         ignoreTouch: true,
@@ -18,7 +18,7 @@ void main() {
     expect(r.lastChapter, 8);
     expect(r.penWidth, 2.75);
     expect(r.inkShade, 'grey');
-    expect(r.nativeInk, isFalse);
+    expect(r.nativeInk, isTrue);
     expect(r.translation, 'kjv');
     expect(r.textScaleIndex, 3);
     expect(r.ignoreTouch, isTrue);
@@ -31,8 +31,8 @@ void main() {
     expect(d.lastChapter, 1);
     expect(d.penWidth, 1.5);
     expect(d.inkShade, 'black');
-    // On by default: matching the pen you write with is the point.
-    expect(d.nativeInk, isTrue);
+    // Off by default until it is demonstrably cheap on real hardware.
+    expect(d.nativeInk, isFalse);
     expect(d.translation, 'kjv');
     expect(d.textScaleIndex, 1);
     expect(d.ignoreTouch, isFalse);
@@ -48,6 +48,14 @@ void main() {
     expect(Settings.fromJson({'widthIndex': 99}).penWidth, 6.0);
     expect(
         Settings.fromJson({'widthIndex': 0, 'penWidth': 4.0}).penWidth, 4.0);
+  });
+
+  test('native ink is not inherited from a file that had it on', () {
+    // It was briefly the default and got written into settings files. Reading
+    // the old key would leave those installs with the slow path they already
+    // complained about, so it is ignored entirely.
+    expect(Settings.fromJson({'nativeInk': true}).nativeInk, isFalse);
+    expect(Settings.fromJson({'nativeInkOptIn': true}).nativeInk, isTrue);
   });
 
   test('penWidth is held inside the nib range', () {
