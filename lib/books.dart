@@ -1,6 +1,6 @@
-/// Static data for the 66-book Protestant canon plus small navigation helpers.
-///
-/// Kept free of Flutter imports so it can be reused and unit-tested cheaply.
+// Static data for the 66-book Protestant canon plus small navigation helpers.
+//
+// Kept free of Flutter imports so it can be reused and unit-tested cheaply.
 
 class BibleBook {
   final String name;
@@ -80,6 +80,192 @@ const List<BibleBook> kBibleBooks = [
   BibleBook('Jude', 1, isOldTestament: false),
   BibleBook('Revelation', 22, isOldTestament: false),
 ];
+
+// --- Book names in the reader's own language ------------------------------
+//
+// The English name above is the book's IDENTITY: notes, reading positions,
+// plans and cross-references are all keyed by it, and that must never shift
+// with the translation on screen. These tables only supply the LABEL, so a
+// Spanish Bible reads "Génesis 1" and a German one "1. Mose 1" while the same
+// note stays attached to the same chapter.
+
+const Map<String, String> _kBookNamesEs = {
+  'Genesis': 'Génesis',
+  'Exodus': 'Éxodo',
+  'Leviticus': 'Levítico',
+  'Numbers': 'Números',
+  'Deuteronomy': 'Deuteronomio',
+  'Joshua': 'Josué',
+  'Judges': 'Jueces',
+  'Ruth': 'Rut',
+  '1 Samuel': '1 Samuel',
+  '2 Samuel': '2 Samuel',
+  '1 Kings': '1 Reyes',
+  '2 Kings': '2 Reyes',
+  '1 Chronicles': '1 Crónicas',
+  '2 Chronicles': '2 Crónicas',
+  'Ezra': 'Esdras',
+  'Nehemiah': 'Nehemías',
+  'Esther': 'Ester',
+  'Job': 'Job',
+  'Psalms': 'Salmos',
+  'Proverbs': 'Proverbios',
+  'Ecclesiastes': 'Eclesiastés',
+  'Song of Solomon': 'Cantares',
+  'Isaiah': 'Isaías',
+  'Jeremiah': 'Jeremías',
+  'Lamentations': 'Lamentaciones',
+  'Ezekiel': 'Ezequiel',
+  'Daniel': 'Daniel',
+  'Hosea': 'Oseas',
+  'Joel': 'Joel',
+  'Amos': 'Amós',
+  'Obadiah': 'Abdías',
+  'Jonah': 'Jonás',
+  'Micah': 'Miqueas',
+  'Nahum': 'Nahúm',
+  'Habakkuk': 'Habacuc',
+  'Zephaniah': 'Sofonías',
+  'Haggai': 'Hageo',
+  'Zechariah': 'Zacarías',
+  'Malachi': 'Malaquías',
+  'Matthew': 'Mateo',
+  'Mark': 'Marcos',
+  'Luke': 'Lucas',
+  'John': 'Juan',
+  'Acts': 'Hechos',
+  'Romans': 'Romanos',
+  '1 Corinthians': '1 Corintios',
+  '2 Corinthians': '2 Corintios',
+  'Galatians': 'Gálatas',
+  'Ephesians': 'Efesios',
+  'Philippians': 'Filipenses',
+  'Colossians': 'Colosenses',
+  '1 Thessalonians': '1 Tesalonicenses',
+  '2 Thessalonians': '2 Tesalonicenses',
+  '1 Timothy': '1 Timoteo',
+  '2 Timothy': '2 Timoteo',
+  'Titus': 'Tito',
+  'Philemon': 'Filemón',
+  'Hebrews': 'Hebreos',
+  'James': 'Santiago',
+  '1 Peter': '1 Pedro',
+  '2 Peter': '2 Pedro',
+  '1 John': '1 Juan',
+  '2 John': '2 Juan',
+  '3 John': '3 Juan',
+  'Jude': 'Judas',
+  'Revelation': 'Apocalipsis',
+};
+
+// Luther naming, to match the bundled Luther 1912 (so the Pentateuch is
+// "1.–5. Mose" rather than the ecumenical Genesis/Exodus/…).
+const Map<String, String> _kBookNamesDe = {
+  'Genesis': '1. Mose',
+  'Exodus': '2. Mose',
+  'Leviticus': '3. Mose',
+  'Numbers': '4. Mose',
+  'Deuteronomy': '5. Mose',
+  'Joshua': 'Josua',
+  'Judges': 'Richter',
+  'Ruth': 'Rut',
+  '1 Samuel': '1. Samuel',
+  '2 Samuel': '2. Samuel',
+  '1 Kings': '1. Könige',
+  '2 Kings': '2. Könige',
+  '1 Chronicles': '1. Chronik',
+  '2 Chronicles': '2. Chronik',
+  'Ezra': 'Esra',
+  'Nehemiah': 'Nehemia',
+  'Esther': 'Ester',
+  'Job': 'Hiob',
+  'Psalms': 'Psalmen',
+  'Proverbs': 'Sprüche',
+  'Ecclesiastes': 'Prediger',
+  'Song of Solomon': 'Hoheslied',
+  'Isaiah': 'Jesaja',
+  'Jeremiah': 'Jeremia',
+  'Lamentations': 'Klagelieder',
+  'Ezekiel': 'Hesekiel',
+  'Daniel': 'Daniel',
+  'Hosea': 'Hosea',
+  'Joel': 'Joel',
+  'Amos': 'Amos',
+  'Obadiah': 'Obadja',
+  'Jonah': 'Jona',
+  'Micah': 'Micha',
+  'Nahum': 'Nahum',
+  'Habakkuk': 'Habakuk',
+  'Zephaniah': 'Zefanja',
+  'Haggai': 'Haggai',
+  'Zechariah': 'Sacharja',
+  'Malachi': 'Maleachi',
+  'Matthew': 'Matthäus',
+  'Mark': 'Markus',
+  'Luke': 'Lukas',
+  'John': 'Johannes',
+  'Acts': 'Apostelgeschichte',
+  'Romans': 'Römer',
+  '1 Corinthians': '1. Korinther',
+  '2 Corinthians': '2. Korinther',
+  'Galatians': 'Galater',
+  'Ephesians': 'Epheser',
+  'Philippians': 'Philipper',
+  'Colossians': 'Kolosser',
+  '1 Thessalonians': '1. Thessalonicher',
+  '2 Thessalonians': '2. Thessalonicher',
+  '1 Timothy': '1. Timotheus',
+  '2 Timothy': '2. Timotheus',
+  'Titus': 'Titus',
+  'Philemon': 'Philemon',
+  'Hebrews': 'Hebräer',
+  'James': 'Jakobus',
+  '1 Peter': '1. Petrus',
+  '2 Peter': '2. Petrus',
+  '1 John': '1. Johannes',
+  '2 John': '2. Johannes',
+  '3 John': '3. Johannes',
+  'Jude': 'Judas',
+  'Revelation': 'Offenbarung',
+};
+
+const Map<String, Map<String, String>> kBookNamesByLanguage = {
+  'es': _kBookNamesEs,
+  'de': _kBookNamesDe,
+};
+
+/// [book] as a reader of a [lang] Bible expects to see it. English, and any
+/// language without a table, keep the canonical name.
+String bookLabel(String book, String lang) =>
+    kBookNamesByLanguage[lang]?[book] ?? book;
+
+/// The language the canon is currently named in. It follows the Bible being
+/// read rather than the app's own English, so a Spanish Bible says "Génesis"
+/// everywhere a book is shown. Nothing stored depends on it — notes, plans and
+/// reading positions all stay keyed by the canonical English name.
+/// Set it via followCanonLanguage() in scripture.dart.
+class CanonLanguage {
+  static String code = 'en';
+}
+
+/// The handful of words the contents list sets beside the book names. Kept
+/// here so they travel with the canon rather than with the app's own chrome.
+class CanonLabels {
+  final String contents;
+  final String oldTestament;
+  final String newTestament;
+
+  const CanonLabels(this.contents, this.oldTestament, this.newTestament);
+}
+
+const Map<String, CanonLabels> _kCanonLabels = {
+  'en': CanonLabels('Contents', 'Old Testament', 'New Testament'),
+  'es': CanonLabels('Contenido', 'Antiguo Testamento', 'Nuevo Testamento'),
+  'de': CanonLabels('Inhalt', 'Altes Testament', 'Neues Testament'),
+};
+
+CanonLabels canonLabels(String lang) =>
+    _kCanonLabels[lang] ?? _kCanonLabels['en']!;
 
 BibleBook bookByName(String name) {
   for (final b in kBibleBooks) {

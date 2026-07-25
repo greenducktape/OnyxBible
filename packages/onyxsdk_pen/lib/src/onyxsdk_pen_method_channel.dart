@@ -1,0 +1,42 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:onyxsdk_pen/src/onyxsdk_pen_platform_interface.dart';
+
+/// An implementation of [OnyxsdkPenPlatform] that uses method channels.
+class MethodChannelOnyxsdkPen extends OnyxsdkPenPlatform {
+  /// The method channel used to interact with the native platform.
+  @visibleForTesting
+  final methodChannel = const MethodChannel('onyxsdk_pen');
+
+  @override
+  Future<bool> isOnyxDevice() async {
+    final isOnyxDevice = await methodChannel.invokeMethod<bool>('isOnyxDevice');
+    return isOnyxDevice ?? false;
+  }
+
+  @override
+  Future<double?> displayDpi() async {
+    try {
+      return await methodChannel.invokeMethod<double>('displayDpi');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<Uint8List?> renderStrokes({
+    required int width,
+    required int height,
+    required List<Map<String, Object?>> strokes,
+  }) async {
+    try {
+      return await methodChannel.invokeMethod<Uint8List>('renderStrokes', {
+        'width': width,
+        'height': height,
+        'strokes': strokes,
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+}

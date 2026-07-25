@@ -43,3 +43,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Private / local Bible translations (copyrighted texts such as NVI, RV1960,
+# LBLA). These MUST NEVER be committed. Only the folder placeholder, its README
+# and the example manifest are tracked; every actual translation file and the
+# real manifest.json are ignored. Raw source files you feed to the importer live
+# in /private_sources/ and are ignored too.
+/assets/bibles_private/*
+!/assets/bibles_private/.gitkeep
+!/assets/bibles_private/README.md
+!/assets/bibles_private/manifest.example.json
+/private_sources/

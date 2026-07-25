@@ -2,14 +2,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:boox_bible/main.dart';
 
 void main() {
-  testWidgets('Bible reader builds and shows the default reference',
+  testWidgets('Fresh launch shows the "Print your Bible" setup wizard',
       (WidgetTester tester) async {
     await tester.pumpWidget(const BooxBibleApp());
 
-    // First frame: the chapter is still loading (no network in tests), but the
-    // app bar should already show the default book/chapter and a spinner.
-    expect(find.text('JOHN'), findsOneWidget);
-    expect(find.text('Chapter 1'), findsOneWidget);
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    // With no printed Bible yet (empty library in tests), the app opens the
+    // one-time setup wizard rather than the reader.
+    expect(find.text('Print your Bible'), findsOneWidget);
+    expect(find.text('Choose a translation'), findsOneWidget);
   });
 }

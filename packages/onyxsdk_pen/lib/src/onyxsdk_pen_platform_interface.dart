@@ -1,0 +1,42 @@
+import 'dart:typed_data';
+
+import 'package:onyxsdk_pen/src/onyxsdk_pen_method_channel.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
+
+abstract class OnyxsdkPenPlatform extends PlatformInterface {
+  /// Constructs a OnyxsdkPenPlatform.
+  OnyxsdkPenPlatform() : super(token: _token);
+
+  static final Object _token = Object();
+
+  static OnyxsdkPenPlatform _instance = MethodChannelOnyxsdkPen();
+
+  /// The default instance of [OnyxsdkPenPlatform] to use.
+  ///
+  /// Defaults to [MethodChannelOnyxsdkPen].
+  static OnyxsdkPenPlatform get instance => _instance;
+
+  /// Platform-specific implementations should set this with their own
+  /// platform-specific class that extends [OnyxsdkPenPlatform] when
+  /// they register themselves.
+  static set instance(OnyxsdkPenPlatform instance) {
+    PlatformInterface.verifyToken(instance, _token);
+    _instance = instance;
+  }
+
+  Future<bool> isOnyxDevice() async => false;
+
+  /// The screen's true physical density in dots per inch, or null where the
+  /// platform can't say. Flutter's devicePixelRatio is relative to a 160dpi
+  /// baseline, which says nothing about an e-ink panel's real dot pitch.
+  Future<double?> displayDpi() async => null;
+
+  /// Renders finished strokes with the SDK's own pen renderers and returns a
+  /// PNG, or null where that isn't possible — see [OnyxsdkPen.renderStrokes].
+  Future<Uint8List?> renderStrokes({
+    required int width,
+    required int height,
+    required List<Map<String, Object?>> strokes,
+  }) async =>
+      null;
+}

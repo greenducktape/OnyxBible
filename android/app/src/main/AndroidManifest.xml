@@ -1,7 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <!-- Needed for fetching additional (non-bundled) translations from the API.
+         Was previously only declared in the debug manifest, so release builds
+         could not load any scripture over the network. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="boox_bible"
+        android:label="Onyx Bible"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"

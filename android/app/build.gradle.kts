@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -5,8 +8,25 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Release signing, in priority order:
+//  1. android/key.properties (private store keystore; gitignored, or written by
+//     CI from repository secrets) — required for store releases.
+//  2. android/sideload.jks — a PUBLIC keystore committed to the repo so every
+//     CI build carries the SAME signature: sideloaded updates then install in
+//     place instead of conflicting (each CI runner's debug key is random, which
+//     made every fresh APK an "app not installed" conflict).
+//  3. The debug key, as a last resort so the build always assembles.
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+val sideloadKeystore = rootProject.file("sideload.jks")
+val hasSideloadKeystore = sideloadKeystore.exists()
+
 android {
-    namespace = "com.example.boox_bible"
+    namespace = "com.onyxbible.reader"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -20,14 +40,30 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.boox_bible"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        applicationId = "com.onyxbible.reader"
+        // minSdk/targetSdk follow Flutter's defaults, kept conservative so the
+        // app installs on Boox devices' older Android builds.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+    }
+
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKeystore) {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            } else if (hasSideloadKeystore) {
+                // Public by design (see android/.gitignore) — sideload only.
+                keyAlias = "sideload"
+                keyPassword = "sideload"
+                storeFile = sideloadKeystore
+                storePassword = "sideload"
+            }
+        }
     }
 
     packaging {
@@ -36,14 +72,25 @@ android {
         }
         jniLibs {
             pickFirsts.add("lib/*/libc++_shared.so")
+            // The Onyx SDK AARs bundle a prebuilt libc++.so whose ELF layout
+            // newer NDK llvm-strip rejects ("not recognized as a valid object
+            // file"); package it unstripped instead of failing the build.
+            keepDebugSymbols.add("**/libc++.so")
         }
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Private keystore > public sideload keystore > debug (last resort).
+            signingConfig = if (hasReleaseKeystore || hasSideloadKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+            // No code shrinking: R8 full-mode otherwise errors on optional
+            // Play Core / deferred-component classes the app never uses.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
