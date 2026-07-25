@@ -8,6 +8,7 @@ void main() {
         lastChapter: 8,
         penWidth: 2.75,
         inkShade: 'grey',
+        nativeInk: false,
         translation: 'kjv',
         textScaleIndex: 3,
         ignoreTouch: true,
@@ -17,6 +18,7 @@ void main() {
     expect(r.lastChapter, 8);
     expect(r.penWidth, 2.75);
     expect(r.inkShade, 'grey');
+    expect(r.nativeInk, isFalse);
     expect(r.translation, 'kjv');
     expect(r.textScaleIndex, 3);
     expect(r.ignoreTouch, isTrue);
@@ -29,6 +31,8 @@ void main() {
     expect(d.lastChapter, 1);
     expect(d.penWidth, 1.5);
     expect(d.inkShade, 'black');
+    // On by default: matching the pen you write with is the point.
+    expect(d.nativeInk, isTrue);
     expect(d.translation, 'kjv');
     expect(d.textScaleIndex, 1);
     expect(d.ignoreTouch, isFalse);
@@ -58,6 +62,7 @@ void main() {
     expect(c.lastChapter, 2);
     expect(c.penWidth, s.penWidth);
     expect(c.inkShade, s.inkShade);
+    expect(c.nativeInk, s.nativeInk);
     expect(c.translation, s.translation);
     expect(c.textScaleIndex, s.textScaleIndex);
     expect(c.ignoreTouch, isTrue);

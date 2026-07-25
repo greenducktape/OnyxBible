@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:onyxsdk_pen/src/onyxsdk_pen_method_channel.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
@@ -28,4 +30,13 @@ abstract class OnyxsdkPenPlatform extends PlatformInterface {
   /// platform can't say. Flutter's devicePixelRatio is relative to a 160dpi
   /// baseline, which says nothing about an e-ink panel's real dot pitch.
   Future<double?> displayDpi() async => null;
+
+  /// Renders finished strokes with the SDK's own pen renderers and returns a
+  /// PNG, or null where that isn't possible — see [OnyxsdkPen.renderStrokes].
+  Future<Uint8List?> renderStrokes({
+    required int width,
+    required int height,
+    required List<Map<String, Object?>> strokes,
+  }) async =>
+      null;
 }

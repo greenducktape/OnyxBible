@@ -18,6 +18,11 @@ class Settings {
   final bool ignoreTouch; // palm rejection: ignore finger touches (pen only)
   final int uiSizeIndex; // toolbar/chrome scale: 0 = Auto (see kUiSizeLabels)
 
+  /// Render finished ink with the Boox SDK's own pen renderers rather than the
+  /// app's imitation of them, so a stroke looks the same after it settles as it
+  /// did under the nib. Ignored on non-Onyx devices, which have no such thing.
+  final bool nativeInk;
+
   const Settings({
     this.lastBook = 'John',
     this.lastChapter = 1,
@@ -27,6 +32,7 @@ class Settings {
     this.textScaleIndex = 1,
     this.ignoreTouch = false,
     this.uiSizeIndex = 0,
+    this.nativeInk = true,
   });
 
   Settings copyWith({
@@ -38,6 +44,7 @@ class Settings {
     int? textScaleIndex,
     bool? ignoreTouch,
     int? uiSizeIndex,
+    bool? nativeInk,
   }) =>
       Settings(
         lastBook: lastBook ?? this.lastBook,
@@ -48,6 +55,7 @@ class Settings {
         textScaleIndex: textScaleIndex ?? this.textScaleIndex,
         ignoreTouch: ignoreTouch ?? this.ignoreTouch,
         uiSizeIndex: uiSizeIndex ?? this.uiSizeIndex,
+        nativeInk: nativeInk ?? this.nativeInk,
       );
 
   Map<String, dynamic> toJson() => {
@@ -60,6 +68,7 @@ class Settings {
         'textScaleIndex': textScaleIndex,
         'ignoreTouch': ignoreTouch,
         'uiSizeIndex': uiSizeIndex,
+        'nativeInk': nativeInk,
       };
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
@@ -71,6 +80,7 @@ class Settings {
         textScaleIndex: (j['textScaleIndex'] as num?)?.toInt() ?? 1,
         ignoreTouch: j['ignoreTouch'] as bool? ?? false,
         uiSizeIndex: (j['uiSizeIndex'] as num?)?.toInt() ?? 0,
+        nativeInk: j['nativeInk'] as bool? ?? true,
       );
 }
 

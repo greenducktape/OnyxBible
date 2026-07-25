@@ -1,7 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
+// Also prefixed: dart:ui's Image collides with the Image widget, and the
+// committed-ink bitmap needs the dart:ui one.
+import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart' show kSecondaryButton, kTertiaryButton;
@@ -37,6 +41,9 @@ void main() {
     WidgetsFlutterBinding.ensureInitialized();
     await OnyxSdkPenArea.init();
     gDisplayDpi = await OnyxsdkPen().displayDpi();
+    // Only a Boox has the SDK's pen renderers; everywhere else the app's own
+    // painter is the only option and asking would just cost a channel call.
+    gNativeInkAvailable = await OnyxsdkPen().isOnyxDevice();
     await SettingsStore.init();
     await PlanStore.init();
     await loadPrivateTranslations(); // register any locally-added versions
@@ -805,6 +812,49 @@ const List<PenPreset> kPenPresets = [
   ),
 ];
 
+/// Whether this device can render committed ink with the SDK's own pens.
+/// Set once at startup; false everywhere that isn't a Boox, where the app's
+/// own painter is the only option.
+bool gNativeInkAvailable = false;
+
+/// The native stroke style a saved stroke was drawn with, so it is committed by
+/// the same renderer that drew it live. Legacy strokes name a preset that still
+/// exists; anything unrecognised falls back to the plain pen.
+OnyxStrokeStyle _nativeStyleOf(String styleId) {
+  for (final p in kPenPresets) {
+    if (p.id == styleId) return p.nativeStyle;
+  }
+  return OnyxStrokeStyle.pen;
+}
+
+/// One stroke, flattened for the platform channel: capture-space coordinates
+/// mapped onto a [size] canvas and then into physical pixels, which is what the
+/// SDK's renderers draw in.
+///
+/// Points are a flat list of five doubles each rather than a list of maps — a
+/// page of handwriting runs to tens of thousands of points, and the channel
+/// codec charges per object.
+Map<String, Object?> _strokeForNative(Stroke stroke, Size size, double dpr) {
+  final (sx, sy) = stroke.scaleTo(size);
+  final points = <double>[];
+  for (final p in stroke.points) {
+    points.add(p.x * sx * dpr);
+    points.add(p.y * sy * dpr);
+    points.add(p.pressure);
+    // TouchPoint.size is the nib footprint, which the app never captured; the
+    // nib width is the honest stand-in and is what the plain-pen renderer
+    // measures its line by.
+    points.add(stroke.width * dpr);
+    points.add(p.t < 0 ? 0.0 : p.t);
+  }
+  return {
+    'style': _nativeStyleOf(stroke.style).value,
+    'color': stroke.color.toARGB32(),
+    'width': stroke.width * dpr,
+    'points': points,
+  };
+}
+
 /// The panel's true density in dots per inch, read from the pen plugin at
 /// startup, or null where the platform won't say. Flutter's devicePixelRatio is
 /// measured against a 160dpi baseline and understates an e-ink panel's real dot
@@ -1566,8 +1616,14 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     ('notes', Icons.gesture, 'My notes'),
     ('library', Icons.auto_stories_outlined, 'My Bibles'),
     ('uisize', Icons.format_size, 'Interface size'),
+    ('ink', Icons.gesture, 'Ink rendering'),
     ('about', Icons.info_outline, 'About'),
   ];
+
+  // Ink rendering is a choice only where there is something to choose between:
+  // off a Boox there are no SDK pens, so the app's own rendering is all there is.
+  Iterable<(String, IconData, String)> get _visibleMenuItems =>
+      _menuItems.where((i) => i.$1 != 'ink' || gNativeInkAvailable);
 
   Widget _buildDrawer() {
     return Drawer(
@@ -1589,7 +1645,7 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
                 child: ListView(
                   padding: EdgeInsets.zero,
                   children: [
-                    for (final item in _menuItems)
+                    for (final item in _visibleMenuItems)
                       ListTile(
                         leading: Icon(item.$2, color: kInk, size: 24 * _ui),
                         title: Text(item.$3, style: kTitleStyle(18 * _ui)),
@@ -1620,6 +1676,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
         await _openLibrary();
       case 'uisize':
         await _openUiSizePicker();
+      case 'ink':
+        await _openInkPicker();
       case 'about':
         await Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => const UiScaled(child: AboutScreen())));
@@ -1651,6 +1709,42 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     if (picked == null || !mounted) return;
     SettingsStore.update(SettingsStore.value.copyWith(uiSizeIndex: picked));
     setState(() {}); // rebuild so _ui picks up the new choice
+  }
+
+  // Which renderer draws a finished stroke. The Boox pens are the same code
+  // that draws the ink under the nib, so a mark doesn't change when it settles;
+  // the app's own rendering is the fallback, and the way back if the SDK ever
+  // misbehaves on a device this was never tested on.
+  Future<void> _openInkPicker() async {
+    final current = SettingsStore.value.nativeInk;
+    final picked = await showDialog<bool>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        backgroundColor: kPaper,
+        title: Text('Ink rendering', style: kTitleStyle(18 * _ui)),
+        children: [
+          for (final option in const [
+            (true, 'Boox pens', 'Finished ink looks exactly as you wrote it'),
+            (false, 'App rendering', "The app's own drawing of each stroke"),
+          ])
+            ListTile(
+              leading: Icon(
+                  option.$1 == current ? Icons.check : Icons.gesture,
+                  color: option.$1 == current ? kInk : kMuted,
+                  size: 24 * _ui),
+              title: Text(option.$2, style: kTitleStyle(18 * _ui)),
+              subtitle: Text(option.$3,
+                  style: crimson(fontSize: 14 * _ui, color: kMuted)),
+              onTap: () => Navigator.of(context).pop(option.$1),
+            ),
+        ],
+      ),
+    );
+    if (picked == null || !mounted || picked == current) return;
+    SettingsStore.update(SettingsStore.value.copyWith(nativeInk: picked));
+    // Every page rebuilds its ink layer from the new choice.
+    setState(() {});
+    _forceRefresh();
   }
 
   // Plans can pop either a PlanSession (start reading the plan) or a BibleRef.
@@ -2528,6 +2622,104 @@ class _PageInkState extends State<PageInk> {
   final List<Stroke> _erasedThisGesture = [];
   Offset? _eraserAt; // eraser-tip position while erasing (drives the ring)
 
+  // This page's committed ink as the SDK's own pens drew it. Null until the
+  // first render comes back, and null forever where the SDK can't do it — the
+  // painter falls back to the app's rendering either way, so notes are never
+  // invisible while this is in flight.
+  ui.Image? _nativeInk;
+  Size? _nativeInkSize; // canvas size the image was rendered for
+  int _inkRequest = 0; // guards against a slow render landing after a newer one
+  Timer? _inkDebounce;
+
+  bool get _wantNativeInk =>
+      gNativeInkAvailable && SettingsStore.value.nativeInk;
+
+  // Coalesces bursts of change — erasing fires per pointer move, and each
+  // render is a page-sized bitmap crossing the channel.
+  void _scheduleNativeInk() {
+    if (!_wantNativeInk) {
+      _dropNativeInk();
+      return;
+    }
+    _inkDebounce?.cancel();
+    _inkDebounce = Timer(const Duration(milliseconds: 180), _renderNativeInk);
+  }
+
+  void _dropNativeInk() {
+    _inkDebounce?.cancel();
+    if (_nativeInk == null) return;
+    _nativeInk?.dispose();
+    _nativeInk = null;
+    _nativeInkSize = null;
+    _committedRepaint.value++;
+  }
+
+  Future<void> _renderNativeInk() async {
+    final size = _canvasSize;
+    if (!mounted || size == null || size.isEmpty || !_wantNativeInk) return;
+    if (_strokes.isEmpty) {
+      _dropNativeInk();
+      return;
+    }
+    final dpr = _lastDpr;
+    final request = ++_inkRequest;
+    final strokes = [
+      for (final s in _strokes) _strokeForNative(s, size, dpr),
+    ];
+
+    Uint8List? png;
+    try {
+      png = await OnyxsdkPen().renderStrokes(
+        width: (size.width * dpr).round(),
+        height: (size.height * dpr).round(),
+        strokes: strokes,
+      );
+    } catch (_) {
+      png = null;
+    }
+    // A newer render started while this one was in flight, or the page went
+    // away: throw this one out rather than show stale ink.
+    if (!mounted || request != _inkRequest) return;
+    if (png == null) {
+      _dropNativeInk();
+      return;
+    }
+
+    try {
+      final codec = await ui.instantiateImageCodec(png);
+      final frame = await codec.getNextFrame();
+      if (!mounted || request != _inkRequest) {
+        frame.image.dispose();
+        return;
+      }
+      _nativeInk?.dispose();
+      _nativeInk = frame.image;
+      _nativeInkSize = size;
+      _committedRepaint.value++;
+    } catch (_) {
+      _dropNativeInk();
+    }
+  }
+
+  double _lastDpr = 1.0;
+
+  // Follows the setting being turned on or off while pages are already built.
+  // Deferred past the frame: both branches touch a repaint notifier, which is
+  // not something to do in the middle of building.
+  void _reconcileNativeInk() {
+    final wanted = _wantNativeInk;
+    if (!wanted && _nativeInk == null) return;
+    if (wanted && (_nativeInk != null || _strokes.isEmpty)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_wantNativeInk) {
+        _scheduleNativeInk();
+      } else {
+        _dropNativeInk();
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2543,6 +2735,8 @@ class _PageInkState extends State<PageInk> {
       _strokes = DrawingStore.strokesFor(widget.pageKey);
       kUndo.register(widget.pageKey, _resyncFromStore);
       _active = null;
+      _dropNativeInk();
+      _scheduleNativeInk();
       _committedRepaint.value++;
       _activeRepaint.value++;
     }
@@ -2551,14 +2745,27 @@ class _PageInkState extends State<PageInk> {
   @override
   void dispose() {
     kUndo.unregister(widget.pageKey, _resyncFromStore);
+    _inkDebounce?.cancel();
+    _nativeInk?.dispose();
     _committedRepaint.dispose();
     _activeRepaint.dispose();
     super.dispose();
   }
 
+  // The painter reports the canvas it actually drew into. A resize (rotation,
+  // a different page geometry) makes any rendered ink the wrong size, so it is
+  // dropped and re-rendered rather than stretched.
+  void _onPaintSize(Size size) {
+    if (_canvasSize == size) return;
+    _canvasSize = size;
+    if (_nativeInkSize != null && _nativeInkSize != size) _dropNativeInk();
+    _scheduleNativeInk();
+  }
+
   void _resyncFromStore() {
     if (!mounted) return;
     _strokes = DrawingStore.strokesFor(widget.pageKey);
+    _scheduleNativeInk();
     _committedRepaint.value++;
   }
 
@@ -2651,6 +2858,7 @@ class _PageInkState extends State<PageInk> {
         DrawingStore.setStrokes(widget.pageKey, _strokes);
         kUndo.recordAdd(widget.pageKey, _active!);
         changed = true;
+        _scheduleNativeInk();
       }
       _active = null;
       // The new stroke now lives in the committed layer; clear the active one.
@@ -2690,6 +2898,10 @@ class _PageInkState extends State<PageInk> {
     _erasedThisGesture.addAll(removed);
     _strokes.removeWhere((s) => removed.contains(s));
     DrawingStore.setStrokes(widget.pageKey, _strokes);
+    // Erasing repaints from the app's own rendering until the re-render lands;
+    // showing ink that was just rubbed out would be worse than a brief swap.
+    _dropNativeInk();
+    _scheduleNativeInk();
     _committedRepaint.value++;
   }
 
@@ -2698,6 +2910,8 @@ class _PageInkState extends State<PageInk> {
     // Ink is measured against the physical panel, not logical pixels, so a
     // one-pixel line stays one pixel wherever it is painted.
     final dpr = MediaQuery.devicePixelRatioOf(context);
+    _lastDpr = dpr;
+    _reconcileNativeInk();
     return Listener(
       onPointerDown: _onDown,
       onPointerMove: _onMove,
@@ -2713,8 +2927,10 @@ class _PageInkState extends State<PageInk> {
               painter: _CommittedPainter(
                 strokes: _strokes,
                 dpr: dpr,
+                nativeInk: _nativeInk,
+                nativeInkSize: _nativeInkSize,
                 repaint: _committedRepaint,
-                onPaintSize: (s) => _canvasSize = s,
+                onPaintSize: _onPaintSize,
               ),
               child: const SizedBox.expand(),
             ),
@@ -2849,6 +3065,14 @@ class _CommittedPainter extends CustomPainter {
   final List<Stroke> strokes;
   final double dpr;
 
+  /// This page's ink as the SDK's own pens drew it, and the canvas size it was
+  /// rendered for. When both are present and current, it IS the committed ink:
+  /// identical to the raw stroke because it came from the same renderer.
+  /// Otherwise the app draws the strokes itself — while a render is in flight,
+  /// on a non-Onyx device, or when the setting is off.
+  final ui.Image? nativeInk;
+  final Size? nativeInkSize;
+
   // Reports the actual canvas size on every paint. The page uses it to stamp
   // capture boxes on new strokes and to hit-test the eraser in canvas space.
   final ValueChanged<Size>? onPaintSize;
@@ -2857,12 +3081,28 @@ class _CommittedPainter extends CustomPainter {
     required this.strokes,
     required this.dpr,
     required Listenable repaint,
+    this.nativeInk,
+    this.nativeInkSize,
     this.onPaintSize,
   }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
     onPaintSize?.call(size);
+
+    final image = nativeInk;
+    if (image != null && nativeInkSize == size) {
+      // Rendered at physical resolution for this exact canvas, so it maps back
+      // one bitmap pixel to one panel pixel — no resampling to soften it.
+      canvas.drawImageRect(
+        image,
+        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+        Offset.zero & size,
+        Paint()..filterQuality = FilterQuality.none,
+      );
+      return;
+    }
+
     for (final s in strokes) {
       _paintStroke(canvas, s, size, dpr);
     }
@@ -2870,7 +3110,10 @@ class _CommittedPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CommittedPainter old) =>
-      old.strokes != strokes || old.dpr != dpr;
+      old.strokes != strokes ||
+      old.dpr != dpr ||
+      old.nativeInk != nativeInk ||
+      old.nativeInkSize != nativeInkSize;
 }
 
 class _ActivePainter extends CustomPainter {

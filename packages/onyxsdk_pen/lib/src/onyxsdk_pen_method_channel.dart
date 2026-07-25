@@ -22,4 +22,21 @@ class MethodChannelOnyxsdkPen extends OnyxsdkPenPlatform {
       return null;
     }
   }
+
+  @override
+  Future<Uint8List?> renderStrokes({
+    required int width,
+    required int height,
+    required List<Map<String, Object?>> strokes,
+  }) async {
+    try {
+      return await methodChannel.invokeMethod<Uint8List>('renderStrokes', {
+        'width': width,
+        'height': height,
+        'strokes': strokes,
+      });
+    } catch (_) {
+      return null;
+    }
+  }
 }

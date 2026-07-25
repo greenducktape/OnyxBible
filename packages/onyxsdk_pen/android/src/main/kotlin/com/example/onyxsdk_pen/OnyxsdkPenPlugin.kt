@@ -47,6 +47,21 @@ class OnyxsdkPenPlugin: FlutterPlugin, MethodCallHandler {
       val metrics = appContext?.resources?.displayMetrics
       val dpi = metrics?.let { (it.xdpi + it.ydpi) / 2f } ?: 0f
       result.success(if (dpi > 1f) dpi.toDouble() else null)
+    } else if (call.method == "renderStrokes") {
+      // Hands a page of finished strokes to the SDK's own pen renderers and
+      // returns the result as a PNG. Null means "draw it yourself" — a
+      // non-Onyx device, an allocation failure, or an SDK that declined.
+      val args = call.arguments<Map<String, Any?>>()
+      @Suppress("UNCHECKED_CAST")
+      val strokes = args?.get("strokes") as? List<Map<String, Any?>> ?: emptyList()
+      result.success(
+        OnyxStrokeRenderer.renderToPng(
+          appContext,
+          (args?.get("width") as? Number)?.toInt() ?: 0,
+          (args?.get("height") as? Number)?.toInt() ?: 0,
+          strokes,
+        )
+      )
     } else {
       result.notImplemented()
     }
