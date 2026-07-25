@@ -289,14 +289,29 @@ class StrokePoint {
   /// without a sensor draws an even line instead of a guessed one.
   final double pressure;
 
-  const StrokePoint(this.x, this.y, [this.pressure = 1.0]);
+  /// Milliseconds since this stroke began, or -1 for strokes captured before
+  /// the app recorded timing.
+  ///
+  /// A brush responds to how fast the hand moves, and without a clock that can
+  /// only be inferred from how far apart two samples landed — which assumes a
+  /// steady report rate nothing actually promises. Recorded now so the ink can
+  /// be rendered from what the hand did rather than from a guess about it.
+  final double t;
 
-  Map<String, dynamic> toJson() => {'x': x, 'y': y, 'p': pressure};
+  const StrokePoint(this.x, this.y, [this.pressure = 1.0, this.t = -1]);
+
+  Map<String, dynamic> toJson() => {
+        'x': x,
+        'y': y,
+        'p': pressure,
+        if (t >= 0) 't': t,
+      };
 
   factory StrokePoint.fromJson(Map<String, dynamic> json) => StrokePoint(
         (json['x'] as num).toDouble(),
         (json['y'] as num).toDouble(),
         (json['p'] as num?)?.toDouble() ?? 1.0,
+        (json['t'] as num?)?.toDouble() ?? -1,
       );
 
   Offset toOffset() => Offset(x, y);
@@ -876,20 +891,50 @@ const Map<String, PenRecipe> _kPenRecipes = {
   'marker': PenRecipe(lo: 1.0, cap: StrokeCap.butt, opacity: 0.32),
 };
 
-/// Sample spacing (in capture pixels) that counts as a fast stroke. The stylus
-/// reports at a steady rate, so how far apart two samples landed is how fast
-/// the hand was moving between them — no timestamp needed, which means notes
-/// written before any of this get the same treatment when they're redrawn.
+/// Fallback for strokes with no timing: the sample spacing, in pixels, that
+/// counts as fast. Assumes a steady report rate, which is why it is only the
+/// fallback — notes written before the app kept a clock still render this way.
 const double _kSpeedRef = 9.0;
 
-/// Per-point speed, smoothed. Raw sample spacing is jittery and a nib does not
-/// flicker in width; a short moving average turns it into the kind of slow
-/// swell a hand actually produces.
-List<double> _speedProfile(List<Offset> p) {
+/// Hand speed that counts as a fast stroke, in millimetres per second. Brisk
+/// handwriting runs near this; a flick goes several times faster. Stated
+/// physically rather than in pixels so a nib behaves the same on a 300dpi panel
+/// as on a 220dpi one.
+const double _kFastHandMmPerSecond = 130.0;
+
+/// [_kFastHandMmPerSecond] in canvas pixels per millisecond, or null when the
+/// panel has never told us its density — then there is no honest way to turn a
+/// pixel speed into a hand speed, and the caller falls back to spacing.
+double? _fastSpeedPxPerMs(double dpr) {
+  final dpi = gDisplayDpi;
+  if (dpi == null || dpi <= 1) return null;
+  final pxPerMm = dpi / 25.4 / (dpr > 0 ? dpr : 1.0);
+  return _kFastHandMmPerSecond * pxPerMm / 1000.0;
+}
+
+/// Per-point speed as a 0..1 fraction of "fast", smoothed.
+///
+/// With timestamps this is a real velocity. Without them it falls back to bare
+/// sample spacing. Either way the result is smoothed: raw per-sample speed is
+/// jittery and a nib does not flicker in width — a short moving average turns
+/// it into the kind of slow swell a hand actually produces.
+List<double> _speedProfile(List<Offset> p, List<double> times, double? fast) {
   final n = p.length;
+  final timed = fast != null &&
+      times.length == n &&
+      times.last > times.first &&
+      !times.any((t) => t < 0);
+
   final raw = List<double>.filled(n, 0);
   for (var i = 1; i < n; i++) {
-    raw[i] = (p[i] - p[i - 1]).distance;
+    final d = (p[i] - p[i - 1]).distance;
+    if (timed) {
+      final dt = times[i] - times[i - 1];
+      // A zero gap says nothing about speed; carry the previous value.
+      raw[i] = dt > 0.001 ? (d / dt) / fast : raw[i - 1];
+    } else {
+      raw[i] = d / _kSpeedRef;
+    }
   }
   if (n > 1) raw[0] = raw[1];
 
@@ -902,7 +947,7 @@ List<double> _speedProfile(List<Offset> p) {
       sum += raw[k];
       count++;
     }
-    out[i] = sum / count;
+    out[i] = (sum / count).clamp(0.0, 1.0);
   }
   return out;
 }
@@ -1097,15 +1142,19 @@ void _paintStroke(Canvas canvas, Stroke stroke, Size size, double dpr,
   // would put a spike in the outline.
   final p = <Offset>[];
   final pressures = <double>[];
+  final times = <double>[];
   for (final sp in pts) {
     final o = Offset(sp.x * sx, sp.y * sy);
     if (p.isNotEmpty && (o - p.last).distanceSquared < 0.01) continue;
     p.add(o);
     pressures.add(sp.pressure);
+    times.add(sp.t);
   }
 
   final n = p.length;
-  final speeds = recipe.speed > 0 ? _speedProfile(p) : null;
+  final speeds = recipe.speed > 0
+      ? _speedProfile(p, times, _fastSpeedPxPerMs(dpr))
+      : null;
   final w = List<double>.generate(n, (i) {
     final pr = pressures[i];
     // A negative pressure means the stylus reports none worth using. Treat it
@@ -1114,7 +1163,7 @@ void _paintStroke(Canvas canvas, Stroke stroke, Size size, double dpr,
     final pressed = pr < 0 ? 1.0 : pr.clamp(0.0, 1.0);
     var weight = pressed;
     if (speeds != null) {
-      final slow = 1.0 - (speeds[i] / _kSpeedRef).clamp(0.0, 1.0);
+      final slow = 1.0 - speeds[i];
       weight = pressed * (1 - recipe.speed) + slow * recipe.speed;
     }
     var f = recipe.lo + (recipe.hi - recipe.lo) * weight;
@@ -2523,6 +2572,9 @@ class _PageInkState extends State<PageInk> {
   /// the reported range a pen that maxes out at 4.0 reads as "hardest possible
   /// press" the whole time. Pens with no sensor report a flat range, and -1
   /// tells the painter to lay down the plain nib rather than guess a weight.
+  // When the active stroke began, so each point can carry its offset from it.
+  Duration _strokeStart = Duration.zero;
+
   double _pressureOf(PointerEvent e) {
     final span = e.pressureMax - e.pressureMin;
     if (span.abs() < 0.001) return -1.0;
@@ -2544,9 +2596,10 @@ class _PageInkState extends State<PageInk> {
       _activeRepaint.value++;
       return;
     }
+    _strokeStart = e.timeStamp;
     _active = Stroke(
       points: [
-        StrokePoint(e.localPosition.dx, e.localPosition.dy, _pressureOf(e))
+        StrokePoint(e.localPosition.dx, e.localPosition.dy, _pressureOf(e), 0)
       ],
       width: widget.penWidth,
       color: widget.penColor,
@@ -2574,8 +2627,12 @@ class _PageInkState extends State<PageInk> {
     final dx = e.localPosition.dx - last.x;
     final dy = e.localPosition.dy - last.y;
     if (dx * dx + dy * dy < _minSegment * _minSegment) return;
-    _active!.points.add(
-        StrokePoint(e.localPosition.dx, e.localPosition.dy, _pressureOf(e)));
+    _active!.points.add(StrokePoint(
+      e.localPosition.dx,
+      e.localPosition.dy,
+      _pressureOf(e),
+      (e.timeStamp - _strokeStart).inMicroseconds / 1000.0,
+    ));
     // Only the active layer repaints — committed strokes are untouched.
     _activeRepaint.value++;
   }

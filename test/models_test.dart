@@ -17,6 +17,19 @@ void main() {
       final p = StrokePoint.fromJson({'x': 1.0, 'y': 2.0});
       expect(p.pressure, 1.0);
     });
+
+    test('carries its timestamp, and survives without one', () {
+      const timed = StrokePoint(1, 2, 0.5, 42.5);
+      expect(StrokePoint.fromJson(timed.toJson()).t, 42.5);
+
+      // Points written before the app kept a clock read as untimed, and an
+      // untimed point does not waste a key in the file.
+      const untimed = StrokePoint(1, 2, 0.5);
+      expect(untimed.t, -1);
+      expect(untimed.toJson().containsKey('t'), isFalse);
+      expect(StrokePoint.fromJson(untimed.toJson()).t, -1);
+      expect(StrokePoint.fromJson({'x': 1.0, 'y': 2.0}).t, -1);
+    });
   });
 
   group('Stroke', () {
