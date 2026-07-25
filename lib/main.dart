@@ -1221,9 +1221,14 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
   int _page = 0;
   int _pageCount = 1;
 
-  // Bumping this flips [OnyxSdkPenArea.refreshDelay] by 1ms, which makes the
-  // native side run a full e-ink (GC) refresh to clear pen ghosting.
-  int _refreshTick = 0;
+  // Asks the panel for a clean sweep once the new content is on screen. A GC
+  // refresh shows whatever is in the framebuffer at the moment it runs, so it
+  // has to come after the frame, never before it.
+  void _refreshPanelAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(OnyxSdkPenArea.forceRefresh());
+    });
+  }
 
   // When navigating from search to a specific verse, the page containing it is
   // selected after pagination; consumed (set to null) once applied.
@@ -1339,8 +1344,8 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
       _isLoading = false;
       _hasError = false;
       _page = 0;
-      _refreshTick++;
     });
+    _refreshPanelAfterFrame();
     // If a search target is pending, the page is chosen during build instead.
     if (_targetVerse == null) _resetToFirstPage();
   }
@@ -1351,9 +1356,14 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
     });
   }
 
+  // A full e-ink refresh, on the app's terms. This DOES take any raw ink the
+  // SDK is still showing with it, replacing it with the app's own rendering —
+  // so it belongs to moments when the page is changing anyway, never to the
+  // seconds right after a stroke.
   void _forceRefresh() {
     _turnsSinceGc = 0;
-    setState(() => _refreshTick++);
+    setState(() {});
+    _refreshPanelAfterFrame();
   }
 
   /// "GENESIS 4:1–26" — the verse span a page carries, as books print it.
@@ -1701,10 +1711,14 @@ class _BibleReaderScreenState extends State<BibleReaderScreen>
               child: Stack(
                 children: [
                   OnyxSdkPenArea(
-                    // A 1ms flip of refreshDelay triggers a native full e-ink
-                    // refresh that clears pen ghosting after page/chapter changes.
-                    refreshDelay:
-                        Duration(milliseconds: 1200 + (_refreshTick % 2)),
+                    // OFF on purpose. The SDK used to wipe the panel ~1.2s
+                    // after every stroke so the app could redraw the same mark
+                    // itself — and that swap is exactly the "it changed by
+                    // itself" that makes writing feel wrong, because the app's
+                    // rendering is never quite the SDK's. The ink now stays
+                    // where the pen put it; ghosting is cleared on page turns
+                    // and by the refresh button instead (_forceRefresh).
+                    refreshDelay: Duration.zero,
                     // Active pen preset chooses the native style, so the live
                     // overlay and the committed Flutter stroke are the same nib.
                     strokeStyle: _preset.nativeStyle,

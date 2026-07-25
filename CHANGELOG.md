@@ -51,6 +51,16 @@ All notable changes to Onyx Bible are recorded here. Dates are ISO 8601.
   to black or to invisible white.
 
 ### Changed
+- **A finished stroke stays exactly as the pen drew it.** The SDK used to wipe
+  the panel about 1.2 seconds after every stroke so the app could re-render the
+  same mark itself — and the app's rendering is never quite the SDK's, so every
+  stroke visibly changed a moment after it was written. That timer is off. The
+  ink now stays where the pen put it; the panel is cleared on page turns, on
+  chapter changes and by the refresh button, when the view is changing anyway.
+- **No more full-screen flash on every rebuild.** The native side ran a full
+  e-ink refresh each time the app pushed pen settings down, which the app does
+  on every rebuild — so a moving toolbar icon could flash the whole page. It
+  now refreshes only when the pen itself actually changed.
 - **The brush and the pencil stop flattening out when a stroke settles.**
   Committed width was driven by stylus pressure alone, so whenever the pen
   reported little of it — which is most of ordinary writing — every point came

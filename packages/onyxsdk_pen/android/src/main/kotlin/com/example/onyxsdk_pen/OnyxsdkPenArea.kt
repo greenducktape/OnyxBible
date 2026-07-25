@@ -44,6 +44,9 @@ internal class OnyxsdkPenArea(context: Context, messenger: BinaryMessenger, id: 
     private var strokeWidth = 0.0f
     private var strokeColor = Color.BLACK
     private var strokeStyle = StrokeStyle.FountainPen
+    // The first update must always be applied, even if it happens to match the
+    // defaults above — the TouchHelper has not been told anything yet.
+    private var strokeConfigured = false
 
     private fun updateStroke(paramsRef: Map<String, Any>?) {
         /*
@@ -97,9 +100,9 @@ internal class OnyxsdkPenArea(context: Context, messenger: BinaryMessenger, id: 
             */
             dest[2] = if (dest[2] < 0.2) 0.0f else 1.0f
         }
-        strokeColor = Color.HSVToColor(dest)
-        strokeWidth = (paramsRef?.get("strokeWidth") as? Double ?: 3.0).toFloat()
-        strokeStyle = when (paramsRef?.get("strokeStyle") as? Int ?: 0) {
+        val newColor = Color.HSVToColor(dest)
+        val newWidth = (paramsRef?.get("strokeWidth") as? Double ?: 3.0).toFloat()
+        val newStyle = when (paramsRef?.get("strokeStyle") as? Int ?: 0) {
             0 -> StrokeStyle.FountainPen
             1 -> StrokeStyle.Pen
             2 -> StrokeStyle.Brush
@@ -108,6 +111,21 @@ internal class OnyxsdkPenArea(context: Context, messenger: BinaryMessenger, id: 
             5 -> StrokeStyle.Disabled
             else -> StrokeStyle.Pen
         }
+        (paramsRef?.get("refreshDelayMs") as? Number)?.let { refreshDelayMs = it.toLong() }
+
+        // The app calls this on EVERY rebuild, not only when the pen changes.
+        // The GC invalidate at the end of this method flashes the whole panel
+        // and takes any finished raw ink with it, so firing it because a
+        // toolbar icon moved is how a page ends up flashing at nothing.
+        val changed = !strokeConfigured ||
+            newColor != strokeColor ||
+            newWidth != strokeWidth ||
+            newStyle != strokeStyle
+        strokeColor = newColor
+        strokeWidth = newWidth
+        strokeStyle = newStyle
+        strokeConfigured = true
+        if (!changed) return
 
         if (strokeStyle != StrokeStyle.Disabled) {
             touchHelper.setStrokeStyle(strokeStyleToOnyx(strokeStyle))
@@ -143,7 +161,10 @@ internal class OnyxsdkPenArea(context: Context, messenger: BinaryMessenger, id: 
     private val currentStroke: ArrayList<TouchPoint> = ArrayList()
 
     private var refreshTimerTask: TimerTask? = null
-    private val refreshDelayMs: Long by lazy { creationParams?.get("refreshDelayMs") as? Long ?: 1000 }
+    // Zero or less means: never take a finished stroke away on a timer. See
+    // scheduleRefresh(). Settable, so the app can change its mind at runtime.
+    private var refreshDelayMs: Long =
+        (creationParams?.get("refreshDelayMs") as? Number)?.toLong() ?: 1000
 
     private val callback: RawInputCallback = object: RawInputCallback() {
         fun reset() {
@@ -164,6 +185,13 @@ internal class OnyxsdkPenArea(context: Context, messenger: BinaryMessenger, id: 
 
         fun scheduleRefresh() {
             refreshTimerTask?.cancel()
+            // The raw ink the SDK just drew IS the mark the writer watched
+            // appear. Wiping the panel a second later so the same stroke can be
+            // re-rendered from the app is what reads as "it changed by itself",
+            // and no amount of matching the rendering hides the swap. A
+            // non-positive delay turns the timer off and leaves the stroke where
+            // the pen put it; the app refreshes on its own terms instead.
+            if (refreshDelayMs <= 0) return
             refreshTimerTask = object : TimerTask() {
                 override fun run() {
                     forceRefresh()
@@ -274,6 +302,11 @@ internal class OnyxsdkPenArea(context: Context, messenger: BinaryMessenger, id: 
             result.success(null)
         } else if (call.method == "setDraw") {
             setDraw(call.arguments<Boolean>()!!)
+            result.success(null)
+        } else if (call.method == "forceRefresh") {
+            // Explicit: the app asks for a clean panel when IT decides one is
+            // due (page turn, ghosting), rather than on a timer after writing.
+            forceRefresh()
             result.success(null)
         } else {
             result.notImplemented()

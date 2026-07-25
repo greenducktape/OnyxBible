@@ -17,11 +17,16 @@ class OnyxSdkPenArea extends StatefulWidget {
     required this.child,
   });
 
-  /// The delay after the pen stroke is finished before the screen is refreshed.
+  /// How long after a stroke finishes the panel is wiped and redrawn.
   ///
-  /// Setting this too low will cause the screen to refresh while the user
-  /// is still writing, which will make the screen get stuck in a half-drawn
-  /// state.
+  /// Setting this too low refreshes while the user is still writing, leaving
+  /// the screen stuck half-drawn.
+  ///
+  /// [Duration.zero] turns the timer OFF: the ink the SDK drew stays exactly
+  /// where the pen put it, and the app decides for itself when a clean panel is
+  /// due (see [forceRefresh]). Use this when the app's own rendering of a
+  /// finished stroke doesn't match the SDK's — the swap is far more noticeable
+  /// than any ghosting it clears.
   final Duration refreshDelay;
   final OnyxStrokeStyle strokeStyle;
   final Color strokeColor;
@@ -40,6 +45,18 @@ class OnyxSdkPenArea extends StatefulWidget {
   /// Returns true if the device is an Onyx device, false otherwise.
   static Future<bool> init() async {
     return await _OnyxSdkPenAreaState._findIsOnyxDevice();
+  }
+
+  /// Wipe and redraw the panel now (a full e-ink GC refresh), clearing pen
+  /// ghosting. Any raw ink the SDK has drawn goes with it, so call this when
+  /// the view is changing anyway — a page turn — not while the writer is
+  /// looking at what they just wrote.
+  static Future<void> forceRefresh() async {
+    try {
+      await const MethodChannel('onyxsdk_pen_area').invokeMethod('forceRefresh');
+    } catch (_) {
+      // Not an Onyx device, or no view attached yet: nothing to refresh.
+    }
   }
 }
 
