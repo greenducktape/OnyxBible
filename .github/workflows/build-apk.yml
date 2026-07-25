@@ -56,6 +56,37 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release
 
+      # TEMPORARY — remove once the parameters are known.
+      # javap gave the Neo*Pen signatures but not what their float arguments
+      # MEAN, and calling drawStroke with the arguments in the wrong roles
+      # produces confidently wrong ink. -l prints the LocalVariableTable, which
+      # carries the real parameter names when the AAR kept debug info.
+      - name: Dump Onyx pen parameter names
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e
+          aar=$(find ~/.gradle/caches -name 'onyxsdk-pen-*.aar' | head -1)
+          echo "AAR: $aar"
+          work=$(mktemp -d)
+          unzip -o -q "$aar" -d "$work"
+          unzip -o -q "$work/classes.jar" -d "$work/cls"
+          cd "$work/cls" || exit 0
+          for c in com.onyx.android.sdk.pen.NeoBrushPen \
+                   com.onyx.android.sdk.pen.NeoCharcoalPen \
+                   com.onyx.android.sdk.pen.NeoFountainPen \
+                   com.onyx.android.sdk.pen.NeoMarkerPen \
+                   com.onyx.android.sdk.pen.NeoPenUtils \
+                   com.onyx.android.sdk.pen.PenUtils \
+                   com.onyx.android.sdk.data.note.ShapeCreateArgs; do
+            echo "########## $c"
+            javap -p -l -classpath . "$c" 2>/dev/null | head -150
+          done
+          echo "########## TouchHelper pressure/limits"
+          javap -p -classpath . com.onyx.android.sdk.pen.TouchHelper 2>/dev/null \
+            | grep -i 'pressure\|max\|limit' | head -20
+          exit 0
+
       - name: Rename APK
         run: cp build/app/outputs/flutter-apk/app-release.apk onyx-bible.apk
 
